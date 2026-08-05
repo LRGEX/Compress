@@ -23,6 +23,7 @@ rfd = "0.15"
 ureq = { version = "2", features = ["json"] }
 hex = "0.4"
 ed25519-dalek = "2"
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_Security"] }
 
 [build-dependencies]
 winres = "0.1"

@@ -10,6 +10,7 @@
 
 mod compress;
 mod extract;
+mod multiselect;
 mod progress;
 mod update;
 
@@ -128,47 +129,74 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let is_extract = args.len() >= 3 && args[1] == "-x";
 
-    let (op_label, archive, folder): (String, Option<PathBuf>, Option<PathBuf>) = if is_extract {
-        let a = PathBuf::from(&args[2]);
-        let name = a.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        (format!("Extracting {}", name), Some(a), None)
-    } else if args.len() >= 2 {
-        let f = PathBuf::from(&args[1]);
-        let name = f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        (format!("Compressing {}", name), None, Some(f))
-    } else {
-        show_error("No folder or archive was given.");
+    // --- EXTRACT path (no multi-select) ---
+    if is_extract {
+        let archive = PathBuf::from(&args[2]);
+        if !archive.is_file() {
+            show_error(&format!("Archive not found:\n{}", archive.display()));
+            return;
+        }
+        let name = archive.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let op_label = format!("Extracting {}", name);
+        let dest: PathBuf = archive.with_extension("");
+        run_one(op_label, false, dest, OpKind::Extract(archive));
         return;
-    };
-
-    // Validate input before opening the progress window.
-    if let Some(f) = &folder {
-        if !f.is_dir() && !f.is_file() {
-            show_error(&format!("Not found:\n{}", f.display()));
-            return;
-        }
-    }
-    if let Some(a) = &archive {
-        if !a.is_file() {
-            show_error(&format!("Archive not found:\n{}", a.display()));
-            return;
-        }
     }
 
-    // Destination path.
-    let dest: PathBuf = if is_extract {
-        archive.as_ref().unwrap().with_extension("")
-    } else {
-        let f = folder.as_ref().unwrap();
-        let name = f
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-        match f.parent() {
+    // --- COMPRESS path ---
+    if args.len() < 2 {
+        show_error("No folder or file was given.");
+        return;
+    }
+    let own = PathBuf::from(&args[1]);
+    if !own.is_dir() && !own.is_file() {
+        show_error(&format!("Not found:\n{}", own.display()));
+        return;
+    }
+
+    // Multi-select coordination: returns this instance's path + any siblings Explorer
+    // spawned. Empty = we were a forwarder and already handed our path off — exit.
+    let paths = multiselect::collect_paths(own);
+    if paths.is_empty() {
+        return; // forwarder, done
+    }
+
+    // Single vs. multi.
+    if paths.len() == 1 {
+        let f = paths.into_iter().next().unwrap();
+        let name = f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let op_label = format!("Compressing {}", name);
+        let dest = match f.parent() {
             Some(p) => p.join(format!("{}.zgx", name)),
             None => PathBuf::from(format!("{}.zgx", name)),
-        }
-    };
+        };
+        run_one(op_label, true, dest, OpKind::CompressOne(f));
+    } else {
+        // Multi: archive is named after the shared parent folder, placed in that parent.
+        let parent = paths
+            .iter()
+            .filter_map(|p| p.parent().map(|x| x.to_path_buf()))
+            .next()
+            .unwrap_or_else(|| PathBuf::from("."));
+        let label = parent
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "Archive".to_string());
+        let op_label = format!("Compressing {} ({} items)", label, paths.len());
+        let dest = parent.join(format!("{}.zgx", label));
+        run_one(op_label, true, dest, OpKind::CompressMany(paths));
+    }
+}
+
+enum OpKind {
+    Extract(PathBuf),
+    CompressOne(PathBuf),
+    CompressMany(Vec<PathBuf>),
+}
+
+fn run_one(op_label: String, cancellable: bool, dest: PathBuf, op: OpKind) {
+    let is_extract = matches!(op, OpKind::Extract(_));
 
     let app = match ProgressWindow::new() {
         Ok(a) => a,
@@ -178,17 +206,20 @@ fn main() {
         }
     };
     app.set_op_label(op_label.into());
-    app.set_cancellable(!is_extract); // Cancel is available during compress only.
+    app.set_cancellable(cancellable && !is_extract); // Cancel is available during compress only.
 
     let cancel = Arc::new(AtomicBool::new(false));
 
     // Run the operation in a background thread; the timer reads the heartbeat file.
     let cancel_for_thread = cancel.clone();
     let op_handle = std::thread::spawn(move || {
-        if is_extract {
-            let _ = extract::extract_archive(&archive.unwrap(), &dest);
-        } else {
-            let _ = compress::compress_folder(&folder.unwrap(), &dest, &[], &cancel_for_thread);
+        match op {
+            OpKind::Extract(a) => { let _ = extract::extract_archive(&a, &dest); }
+            OpKind::CompressOne(f) => { let _ = compress::compress_folder(&f, &dest, &[], &cancel_for_thread); }
+            OpKind::CompressMany(inputs) => {
+                let label = dest.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                let _ = compress::compress_paths(&inputs, &dest, &label, &cancel_for_thread);
+            }
         }
     });
 
