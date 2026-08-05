@@ -19,7 +19,7 @@ Free, open source, MIT licensed.
 
 ---
 
-## In our benchmark, LRGEX Compress finished compressing 145,000 files while WinRAR was still at 29% on the same machine.
+## In our benchmark, LRGEX Compress finished extracting 145,000 files while WinRAR was still at 29% on the same machine.
 
 LRGEX Compress uses **Zstandard (zstd)** — a modern compression algorithm optimized for speed. WinRAR and 7-Zip use traditional algorithms (RAR, LZMA2) that are optimized for maximum compression ratio but take significantly longer.
 
@@ -30,7 +30,7 @@ For everyday backups and file sharing, many users prefer finishing in seconds in
 | | LRGEX Compress | WinRAR | 7-Zip |
 |---|---|---|---|
 | **Algorithm** | zstd (modern) | RAR | LZMA2 |
-| **Time** | 42 s | 4 m 51 s | 6 m 11 s |
+| **Extraction** | 42 s | 4 m 51 s | 6 m 11 s |
 | **Archive size** | 3.21 GB | 2.95 GB | 2.90 GB |
 | **Cores used** | All (automatic) | All | All |
 | **Price** | Free (MIT) | Free trial | Free |
