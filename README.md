@@ -6,9 +6,11 @@
  
 
 </div>
+
 <div align="center">
 # Compress
  **Version 0.1.0**
+  
 </div>
 
 
