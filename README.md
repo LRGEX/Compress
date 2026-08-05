@@ -1,6 +1,6 @@
 <div align="center">
   <img src="https://download.lrgex.com/Dark%20Full%20Logo.png" alt="LRGEX Logo" width="300">
-  <br>
+  <br><br>
   <img src="assets/product-logo.png" alt="Compress Logo" width="80">
 
   # Compress
