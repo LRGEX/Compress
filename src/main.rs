@@ -24,48 +24,133 @@ use slint::{Timer, TimerMode};
 slint::slint! {
     import { VerticalBox, HorizontalBox, Button } from "std-widgets.slint";
 
+    // Effect 1: gentle glow behind the logo — pulses in place, no expansion.
+    component Halo inherits Rectangle {
+        in property <bool> active: false;
+        property <float> t: Math.mod(animation-tick() / 1ms, 2000) / 2000;
+        width: 48px;
+        height: 48px;
+
+        Rectangle {
+            width: 46px;
+            height: 46px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            border-radius: self.width / 2;
+            border-width: 3px;
+            border-color: #cb803c;
+            background: transparent;
+            // Gentle pulse — triangle wave, oscillates 0.4↔1.0↔0.4, clearly visible.
+            opacity: root.active ? 0.4 + 0.6 * (root.t < 0.5 ? root.t * 2 : (1 - root.t) * 2) : 0.0;
+        }
+    }
+
     export component ProgressWindow inherits Window {
         title: "LRGEX Compress";
+        icon: @image-url("../assets/logo.png");
         background: #1e1e1e;
         preferred-width: 440px;
-        preferred-height: 175px;
+        preferred-height: 160px;
+        max-width: 440px;
+        max-height: 160px;
 
         in property <string> op-label: "Working";
+        in property <string> op-detail: "";
         in property <float> progress-fraction: 0;     // 0.0 .. 1.0
         in property <string> detail: "Starting...";
         in property <bool> done: false;
         in property <bool> cancelling: false;
         in property <bool> cancellable: false;
+        in property <bool> indeterminate: false;
         in property <string> result: "";
         in property <color> result-color: #4caf50;
+        in property <string> version-text: "";
         callback close-clicked();
         callback cancel-clicked();
 
         VerticalBox {
-            Text {
-                text: root.op-label;
-                color: #f0f0f0;
-                font-size: 15px;
-                font-weight: 700;
+            spacing: 8px;
+
+            HorizontalLayout {
+                spacing: 12px;
+                alignment: start;
+
+                Rectangle {
+                    width: 48px;
+                    height: 44px;
+                    Image {
+                        source: @image-url("../assets/logo.png");
+                        height: 34px;
+                        image-fit: contain;
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                    }
+                }
+
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 2px;
+                    Text {
+                        text: root.op-label;
+                        color: #f0f0f0;
+                        font-size: 15px;
+                        font-weight: 700;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: root.op-detail;
+                        color: #aaaaaa;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+                }
             }
+
+            // Progress bar
             Rectangle {
                 height: 24px;
+                width: 100%;
                 background: #2d2d2d;
                 border-radius: 6px;
                 clip: true;
+
                 Rectangle {
+                    visible: !root.indeterminate;
                     x: 0;
                     y: 0;
                     height: 100%;
                     width: parent.width * root.progress-fraction;
                     background: #cb803c;
+                    clip: true;
                     animate width { duration: 120ms; }
+
+                    // Subtle shimmer — a thin white stripe sweeping across the fill.
+                    Rectangle {
+                        property <float> s: Math.mod(animation-tick() / 1ms, 1400) / 1400;
+                        visible: !root.done && root.progress-fraction > 0.0;
+                        width: 40px;
+                        height: parent.height;
+                        x: -40px + self.s * (parent.width + 80px);
+                        background: @linear-gradient(90deg,
+                            #ffffff00 0%, #ffffff40 50%, #ffffff00 100%);
+                    }
+                }
+
+                sweep := Rectangle {
+                    property <float> s: Math.mod(animation-tick() / 1ms, 1600) / 1600;
+                    visible: root.indeterminate;
+                    width: parent.width * 0.28;
+                    x: (parent.width - self.width)
+                       * (self.s < 0.5 ? self.s * 2 : (1.0 - self.s) * 2);
+                    background: #cb803c;
                 }
             }
+
             Text {
                 text: root.detail;
                 color: #cb803c;
                 font-size: 13px;
+                wrap: word-wrap;
             }
             if root.cancellable && !root.done && !root.cancelling : Button {
                 text: "Cancel";
@@ -76,18 +161,21 @@ slint::slint! {
                 color: #aaaaaa;
                 font-size: 13px;
             }
-            if root.done : HorizontalBox {
-                Text {
-                    text: root.result;
-                    color: root.result-color;
-                    font-size: 14px;
-                    vertical-alignment: center;
-                }
-                Button {
-                    text: "Close";
-                    clicked => { root.close-clicked(); }
-                }
+            if root.done : Text {
+                text: root.result;
+                color: root.result-color;
+                font-size: 14px;
+                horizontal-alignment: center;
             }
+        }
+
+        // Version badge in the lower right corner
+        Text {
+            text: root.version-text;
+            color: #555555;
+            font-size: 10px;
+            x: parent.width - self.width - 8px;
+            y: parent.height - self.height - 4px;
         }
     }
 
@@ -131,15 +219,24 @@ fn main() {
 
     // --- EXTRACT path (no multi-select) ---
     if is_extract {
-        let archive = PathBuf::from(&args[2]);
+        // -x <archive> = Extract to subfolder (current behavior)
+        // -xh <archive> = Extract Here (contents dumped into archive's parent)
+        let extract_here = args.len() >= 4 && args[2] == "-h";
+        let archive_path = if extract_here { &args[3] } else { &args[2] };
+        let archive = PathBuf::from(archive_path);
         if !archive.is_file() {
             show_error(&format!("Archive not found:\n{}", archive.display()));
             return;
         }
         let name = archive.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        let op_label = format!("Extracting {}", name);
-        let dest: PathBuf = archive.with_extension("");
-        run_one(op_label, false, dest, OpKind::Extract(archive));
+        let op_label = "Extracting".to_string();
+        let op_detail = name.clone();
+        let dest: PathBuf = if extract_here {
+            archive.parent().unwrap_or(PathBuf::from(".").as_path()).to_path_buf()
+        } else {
+            archive.with_extension("")
+        };
+        run_one(op_label, Some(op_detail), false, dest, OpKind::Extract(archive));
         return;
     }
 
@@ -164,13 +261,26 @@ fn main() {
     // Single vs. multi.
     if paths.len() == 1 {
         let f = paths.into_iter().next().unwrap();
-        let name = f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        let op_label = format!("Compressing {}", name);
+        let is_dir = f.is_dir();
+        let raw_name = f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        // For folders, strip the last .ext from the name (x.md → x). Guard against
+        // dot-prefixed folders (.git, .vscode) and names that would become empty.
+        let name = if is_dir {
+            let stem = PathBuf::from(&raw_name);
+            match stem.file_stem().and_then(|s| s.to_str()) {
+                Some(s) if !s.is_empty() && !raw_name.starts_with('.') => s.to_string(),
+                _ => raw_name.clone(),
+            }
+        } else {
+            raw_name.clone()
+        };
+        let op_label = "Compressing".to_string();
+        let op_detail = raw_name;
         let dest = match f.parent() {
             Some(p) => p.join(format!("{}.zgx", name)),
             None => PathBuf::from(format!("{}.zgx", name)),
         };
-        run_one(op_label, true, dest, OpKind::CompressOne(f));
+        run_one(op_label, Some(op_detail), true, dest, OpKind::CompressOne(f));
     } else {
         // Multi: archive is named after the shared parent folder, placed in that parent.
         let parent = paths
@@ -183,9 +293,10 @@ fn main() {
             .map(|n| n.to_string_lossy().to_string())
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "Archive".to_string());
-        let op_label = format!("Compressing {} ({} items)", label, paths.len());
+        let op_label = "Compressing".to_string();
+        let op_detail = format!("{} ({} items)", label, paths.len());
         let dest = parent.join(format!("{}.zgx", label));
-        run_one(op_label, true, dest, OpKind::CompressMany(paths));
+        run_one(op_label, Some(op_detail), true, dest, OpKind::CompressMany(paths));
     }
 }
 
@@ -195,7 +306,7 @@ enum OpKind {
     CompressMany(Vec<PathBuf>),
 }
 
-fn run_one(op_label: String, cancellable: bool, dest: PathBuf, op: OpKind) {
+fn run_one(op_label: String, op_detail: Option<String>, cancellable: bool, dest: PathBuf, op: OpKind) {
     let is_extract = matches!(op, OpKind::Extract(_));
 
     let app = match ProgressWindow::new() {
@@ -206,6 +317,9 @@ fn run_one(op_label: String, cancellable: bool, dest: PathBuf, op: OpKind) {
         }
     };
     app.set_op_label(op_label.into());
+    app.set_op_detail(op_detail.unwrap_or_default().into());
+    app.set_version_text(format!("v{}", env!("CARGO_PKG_VERSION")).into());
+
     app.set_cancellable(cancellable && !is_extract); // Cancel is available during compress only.
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -213,31 +327,49 @@ fn run_one(op_label: String, cancellable: bool, dest: PathBuf, op: OpKind) {
     // Run the operation in a background thread; the timer reads the heartbeat file.
     let cancel_for_thread = cancel.clone();
     let op_handle = std::thread::spawn(move || {
-        match op {
-            OpKind::Extract(a) => { let _ = extract::extract_archive(&a, &dest); }
-            OpKind::CompressOne(f) => { let _ = compress::compress_folder(&f, &dest, &[], &cancel_for_thread); }
+        let result = match op {
+            OpKind::Extract(a) => extract::extract_archive(&a, &dest),
+            OpKind::CompressOne(f) => {
+                let r = compress::compress_folder(&f, &dest, &[], &cancel_for_thread);
+                (r.0, if r.1.is_empty() { String::new() } else { r.1.join(", ") })
+            }
             OpKind::CompressMany(inputs) => {
                 let label = dest.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-                let _ = compress::compress_paths(&inputs, &dest, &label, &cancel_for_thread);
+                let r = compress::compress_paths(&inputs, &dest, &label, &cancel_for_thread);
+                (r.0, if r.1.is_empty() { String::new() } else { r.1.join(", ") })
+            }
+        };
+        // If the operation failed without writing a terminal phase to the status file
+        // (e.g. unrecognized format), write one now so the UI shows "Failed" instead of
+        // hanging forever.
+        if !result.0 {
+            // Check if the status file already has a terminal phase (3 or 4).
+            let already_terminal = progress::read_status()
+                .map(|s| s.phase >= 3)
+                .unwrap_or(false);
+            if !already_terminal {
+                progress::clear_status();
+                let prog = progress::Progress::new("");
+                prog.finish(4); // error
             }
         }
     });
 
     let timer = Timer::default();
     let weak = app.as_weak();
+    let auto_close = Arc::new(AtomicBool::new(false));
+    let auto_close_clone = auto_close.clone();
+    let close_timer = Timer::default();
     timer.start(TimerMode::Repeated, Duration::from_millis(200), move || {
         let app = match weak.upgrade() {
             Some(a) => a,
             None => return,
         };
         if let Some(s) = progress::read_status() {
-            let pct = if s.bytes_total > 0 {
-                ((s.bytes_done as f64 / s.bytes_total as f64) * 100.0).min(100.0) as i32
-            } else {
-                0
-            };
-            app.set_progress_fraction((pct as f32) / 100.0);
             if s.bytes_total > 0 {
+                app.set_indeterminate(false);
+                let pct = ((s.bytes_done as f64 / s.bytes_total as f64) * 100.0).min(100.0) as i32;
+                app.set_progress_fraction((pct as f32) / 100.0);
                 app.set_detail(
                     format!(
                         "{}%    {:.0} / {:.0} MB    {:.0} MB/s    {}s left",
@@ -250,9 +382,9 @@ fn run_one(op_label: String, cancellable: bool, dest: PathBuf, op: OpKind) {
                     .into(),
                 );
             } else {
-                app.set_detail(
-                    format!("{:.0} MB processed", s.bytes_done as f64 / 1_048_576.0).into(),
-                );
+                app.set_indeterminate(true);
+                app.set_progress_fraction(0.0);
+                app.set_detail("Extracting... (size unknown)".into());
             }
             if !app.get_done() {
                 if s.phase == 3 {
@@ -264,14 +396,26 @@ fn run_one(op_label: String, cancellable: bool, dest: PathBuf, op: OpKind) {
                         app.set_result("Done".into());
                         app.set_result_color(slint::Color::from_rgb_u8(0x4c, 0xaf, 0x50));
                     }
+                    // Start auto-close countdown (2s). The update check runs AFTER
+                    // app.run() returns, so closing the window doesn't skip it.
+                    auto_close.store(true, Ordering::Relaxed);
+                    close_timer.start(TimerMode::SingleShot, Duration::from_secs(2), move || {
+                        let _ = slint::quit_event_loop();
+                    });
                 } else if s.phase == 4 {
                     app.set_done(true);
                     app.set_result("Failed".into());
                     app.set_result_color(slint::Color::from_rgb_u8(0xf4, 0x43, 0x36));
+                    // No auto-close on failure — user needs to read the error.
                 } else if s.phase == 5 {
                     app.set_done(true);
                     app.set_result("Cancelled".into());
                     app.set_result_color(slint::Color::from_rgb_u8(0xcb, 0x80, 0x3c));
+                    // Cancel: kill the process immediately after showing the message.
+                    // No waiting for the operation thread — it may be stuck in a blocking call.
+                    close_timer.start(TimerMode::SingleShot, Duration::from_millis(500), move || {
+                        std::process::exit(0);
+                    });
                 }
             }
         }
@@ -307,6 +451,7 @@ fn run_one(op_label: String, cancellable: bool, dest: PathBuf, op: OpKind) {
     let _ = app.run();
     drop(timer);
     drop(update_timer);
+    let _ = auto_close_clone.load(Ordering::Relaxed);
     let _ = op_handle.join();
     let _ = std::fs::remove_file(progress::status_path());
 

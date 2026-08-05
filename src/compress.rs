@@ -134,7 +134,13 @@ pub fn compress_folder(
     };
     let writer = BufWriter::with_capacity(4 * 1024 * 1024, file);
 
-    let mut encoder = match zstd::Encoder::new(writer, 1) {
+    // Write 8-byte little-endian uncompressed total as a header BEFORE the zstd stream.
+    // Extraction reads this to set accurate progress totals without a pre-scan.
+    use std::io::Write;
+    let mut header_writer = writer;
+    let _ = header_writer.write_all(&total_bytes.to_le_bytes());
+
+    let mut encoder = match zstd::Encoder::new(header_writer, 1) {
         Ok(e) => e,
         Err(_) => {
             progress.finish(4);
@@ -327,7 +333,13 @@ pub fn compress_paths(
         }
     };
     let writer = std::io::BufWriter::with_capacity(4 * 1024 * 1024, file);
-    let mut encoder = match zstd::Encoder::new(writer, 1) {
+
+    // Write 8-byte little-endian uncompressed total as a header BEFORE the zstd stream.
+    use std::io::Write;
+    let mut header_writer = writer;
+    let _ = header_writer.write_all(&total_bytes.to_le_bytes());
+
+    let mut encoder = match zstd::Encoder::new(header_writer, 1) {
         Ok(e) => e,
         Err(_) => {
             progress.finish(4);

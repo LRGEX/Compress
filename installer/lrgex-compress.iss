@@ -65,6 +65,8 @@ Root: HKCU; Subkey: "Software\Classes\*\shell\LRGEX"; \
     ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName},0"
 Root: HKCU; Subkey: "Software\Classes\*\shell\LRGEX"; \
     ValueType: string; ValueName: "ExtendedSubCommandsKey"; ValueData: "*\ContextMenus\LRGEX"
+Root: HKCU; Subkey: "Software\Classes\*\shell\LRGEX"; \
+    ValueType: string; ValueName: "AppliesTo"; ValueData: "System.ItemName:<~""*.zgx"" AND System.ItemName:<~""*.zip"" AND System.ItemName:<~""*.rar"""
 Root: HKCU; Subkey: "Software\Classes\*\ContextMenus\LRGEX\shell\compress"; \
     ValueType: string; ValueName: ""; ValueData: "Compress"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\Classes\*\ContextMenus\LRGEX\shell\compress"; \
@@ -94,6 +96,36 @@ Root: HKCU; Subkey: "Software\Classes\LRGEX.zgx\ContextMenus\LRGEX\shell\extract
 Root: HKCU; Subkey: "Software\Classes\LRGEX.zgx\ContextMenus\LRGEX\shell\extract"; \
     ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName},0"
 Root: HKCU; Subkey: "Software\Classes\LRGEX.zgx\ContextMenus\LRGEX\shell\extract\command"; \
+    ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" -x ""%1"""
+
+; ===== .zip and .rar: cascade ONLY under SystemFileAssociations =====
+; Do NOT take ownership of .zip/.rar — preserves Explorer's built-in zip handler and
+; WinRAR/7-Zip if installed. Adds "LRGEX -> Extract" to their right-click menu only.
+Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.zip\shell\LRGEX"; \
+    ValueType: string; ValueName: ""; ValueData: "LRGEX"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.zip\shell\LRGEX"; \
+    ValueType: string; ValueName: "MUIVerb"; ValueData: "LRGEX"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.zip\shell\LRGEX"; \
+    ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName},0"
+Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.zip\shell\LRGEX"; \
+    ValueType: string; ValueName: "ExtendedSubCommandsKey"; ValueData: "LRGEX.ContextMenus\LRGEX"
+
+Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.rar\shell\LRGEX"; \
+    ValueType: string; ValueName: ""; ValueData: "LRGEX"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.rar\shell\LRGEX"; \
+    ValueType: string; ValueName: "MUIVerb"; ValueData: "LRGEX"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.rar\shell\LRGEX"; \
+    ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName},0"
+Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.rar\shell\LRGEX"; \
+    ValueType: string; ValueName: "ExtendedSubCommandsKey"; ValueData: "LRGEX.ContextMenus\LRGEX"
+
+; Shared submenu used by both .zip and .rar above.
+Root: HKCU; Subkey: "Software\Classes\LRGEX.ContextMenus\LRGEX"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\LRGEX.ContextMenus\LRGEX\shell\extract"; \
+    ValueType: string; ValueName: ""; ValueData: "Extract"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\LRGEX.ContextMenus\LRGEX\shell\extract"; \
+    ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName},0"
+Root: HKCU; Subkey: "Software\Classes\LRGEX.ContextMenus\LRGEX\shell\extract\command"; \
     ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" -x ""%1"""
 
 [Code]
