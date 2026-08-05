@@ -2659,6 +2659,7 @@ dependencies = [
  "slint",
  "tar",
  "ureq",
+ "windows-sys 0.59.0",
  "winres",
  "zstd",
 ]

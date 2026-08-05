@@ -271,6 +271,181 @@ pub fn compress_folder(
     (success, skipped)
 }
 
+/// Compress MULTIPLE inputs (multi-select) into ONE .zgx. Each input is walked and
+/// appended to the same tar stream; entry paths are relative to the shared parent so
+/// the archive opens with a clean tree. Empty dirs across inputs are preserved.
+/// `label` is the display name shown in the progress window (e.g. parent folder name).
+pub fn compress_paths(
+    inputs: &[PathBuf],
+    dest: &Path,
+    label: &str,
+    cancel: &AtomicBool,
+) -> (bool, Vec<String>) {
+    progress::clear_status();
+    let progress = Progress::new(label);
+    let heartbeat = progress.spawn_writer();
+    progress.set_phase(0); // walk
+
+    // Walk every input into one entries list. Each input's entries are prefixed with
+    // the input's own leaf name so the archive has a clean per-input tree.
+    let mut files: Vec<FileEnt> = Vec::new();
+    let mut total_bytes: u64 = 0;
+    for input in inputs {
+        if input.is_dir() {
+            let prefix = PathBuf::from(input.file_name().unwrap_or_else(|| std::ffi::OsStr::new(".")));
+            let (mut entries, bytes, _) = walk_tree(input, &[]);
+            for e in entries.drain(..) {
+                // Prefix each entry's rel with the input folder's leaf name so the
+                // archive opens to one root folder per input (clean tree).
+                let new_rel = prefix.join(&e.rel);
+                files.push(FileEnt { path: e.path, rel: new_rel, size: e.size, is_dir: e.is_dir });
+            }
+            total_bytes += bytes;
+        } else if input.is_file() {
+            let size = std::fs::metadata(input).map(|m| m.len()).unwrap_or(0);
+            let rel = input
+                .file_name()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| input.clone());
+            files.push(FileEnt { path: input.clone(), rel, size, is_dir: false });
+            total_bytes += size;
+        }
+        // Skip silently if the input vanished between select and launch.
+    }
+    let count = files.len();
+    progress.set_totals(count, total_bytes);
+    progress.set_phase(1); // compress
+
+    let part: PathBuf = format!("{}.part", dest.display()).into();
+    let file = match std::fs::File::create(&part) {
+        Ok(f) => f,
+        Err(_) => {
+            progress.finish(4);
+            let _ = heartbeat.join();
+            let _ = std::fs::remove_file(&part);
+            return (false, vec![]);
+        }
+    };
+    let writer = std::io::BufWriter::with_capacity(4 * 1024 * 1024, file);
+    let mut encoder = match zstd::Encoder::new(writer, 1) {
+        Ok(e) => e,
+        Err(_) => {
+            progress.finish(4);
+            let _ = heartbeat.join();
+            let _ = std::fs::remove_file(&part);
+            return (false, vec![]);
+        }
+    };
+    let threads = std::thread::available_parallelism().map(|n| n.get() as u32).unwrap_or(4);
+    let _ = encoder.multithread(threads);
+    let _ = encoder.include_checksum(false);
+    let mut builder = tar::Builder::new(encoder.auto_finish());
+
+    let mut skipped: Vec<String> = Vec::new();
+    let mut cancelled = false;
+
+    for batch in files.chunks(BATCH) {
+        if cancel.load(Ordering::Relaxed) {
+            cancelled = true;
+            break;
+        }
+        let loaded: Vec<Option<std::io::Result<Vec<u8>>>> = batch
+            .par_iter()
+            .map(|e| {
+                if e.is_dir || e.size > BIG_FILE {
+                    None
+                } else {
+                    let r = read_whole(&e.path, e.size);
+                    progress.tick_bytes(e.size);
+                    Some(r)
+                }
+            })
+            .collect();
+
+        for (e, data) in batch.iter().zip(loaded.into_iter()) {
+            if cancel.load(Ordering::Relaxed) {
+                cancelled = true;
+                break;
+            }
+            let res: std::io::Result<()> = if e.is_dir {
+                let mut h = tar::Header::new_gnu();
+                h.set_entry_type(tar::EntryType::Directory);
+                h.set_size(0);
+                h.set_mode(0o755);
+                h.set_uid(0);
+                h.set_gid(0);
+                h.set_mtime(0);
+                h.set_cksum();
+                let dir_name = format!("{}/", e.rel.to_string_lossy().replace('\\', "/"));
+                builder.append_data(&mut h, dir_name, &mut std::io::empty())
+            } else {
+                match data {
+                    Some(Ok(buf)) => {
+                        let mut h = make_header(buf.len() as u64);
+                        let mut slice: &[u8] = buf.as_slice();
+                        builder.append_data(&mut h, &e.rel, &mut slice)
+                    }
+                    Some(Err(err)) => Err(err),
+                    None => match std::fs::File::open(&e.path) {
+                        Ok(f) => match f.metadata() {
+                            Ok(m) => {
+                                let mut h = make_header(m.len());
+                                let mut br = ByteReader::new(f, progress.clone());
+                                builder.append_data(&mut h, &e.rel, &mut br)
+                            }
+                            Err(err) => Err(err),
+                        },
+                        Err(err) => Err(err),
+                    },
+                }
+            };
+            if let Err(_) = res {
+                skipped.push(e.path.to_string_lossy().to_string());
+            }
+        }
+        if cancelled {
+            break;
+        }
+    }
+
+    if cancelled {
+        drop(builder);
+        let _ = std::fs::remove_file(&part);
+        progress.finish(5);
+        let _ = heartbeat.join();
+        return (false, skipped);
+    }
+
+    progress.set_phase(2);
+    let mut ok = builder.finish().is_ok();
+    match builder.into_inner() {
+        Ok(mut enc) => {
+            if enc.flush().is_err() {
+                ok = false;
+            }
+        }
+        Err(_) => ok = false,
+    }
+    progress.set_skipped(skipped.len());
+    let success = if ok {
+        std::fs::rename(&part, dest).is_ok()
+    } else {
+        let _ = std::fs::remove_file(&part);
+        false
+    };
+    let sidecar = format!("{}.skipped.txt", dest.display());
+    if success {
+        if skipped.is_empty() {
+            let _ = std::fs::remove_file(&sidecar);
+        } else {
+            let _ = std::fs::write(&sidecar, skipped.join("\r\n"));
+        }
+    }
+    progress.finish(if success { 3 } else { 4 });
+    let _ = heartbeat.join();
+    (success, skipped)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
