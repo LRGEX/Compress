@@ -3,10 +3,14 @@
   <br><br>
   <img src="assets/product-logo.png" alt="Compress Logo" width="80">
 
-  # Compress
- **Version 0.1.0**
+ 
 
 </div>
+<div align="center">
+   # Compress
+ **Version 0.1.0**
+</div>
+
 
 ## Description
 
