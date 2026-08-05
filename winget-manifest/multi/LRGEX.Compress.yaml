@@ -1,0 +1,27 @@
+ManifestType: merged
+ManifestVersion: 1.6.0
+PackageIdentifier: LRGEX.Compress
+PackageVersion: 1.2.1
+PackageLocale: en-US
+Publisher: LRGEX
+PublisherUrl: https://github.com/LRGEX/Compress
+PackageName: LRGEX Compress
+ShortDescription: Fast file and folder compression for Windows
+License: MIT
+LicenseUrl: https://github.com/LRGEX/Compress/blob/main/LICENSE
+Tags:
+  - compression
+  - archive
+  - zstd
+  - tar
+  - extractor
+Installers:
+  - Architecture: x64
+    InstallerType: inno
+    InstallerUrl: https://github.com/LRGEX/Compress/releases/download/v1.2.1/LRGEX-Compress-v1.2.1-setup.exe
+    InstallerSha256: 1C589D55330F75C458561D38C8FC0CF40EE146B88B2BF1B69234AB8279071111
+    InstallerSwitches:
+      Silent: /VERYSILENT /NORESTART
+      SilentWithProgress: /VERYSILENT /NORESTART
+    Scope: user
+    ProductCode: LRGEX Compress_is1
