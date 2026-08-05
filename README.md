@@ -9,7 +9,13 @@
 
 <div align="center">
 
-<h1 style="border-bottom: none; margin-bottom: 0;">Compress</h1>
+<div id="toc">
+  <ul style="list-style: none">
+    <summary>
+      <h1>Compress</h1>
+    </summary>
+  </ul>
+</div>
 
 **Version 0.1.0**
 
