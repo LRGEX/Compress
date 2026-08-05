@@ -1,7 +1,9 @@
 <div align="center">
   <img src="https://download.lrgex.com/Dark%20Full%20Logo.png" alt="LRGEX Logo" width="300">
 
-  # Compress
+  <img src="assets/product-logo.png" alt="Compress Logo" width="120">
+
+  # LRGEX Compress
 
   **Version 0.1.0**
 
@@ -9,12 +11,12 @@
 
 ## Description
 
-Blazing-fast file and folder compression for Windows — WinRAR-style, right-click simple.
+Blazing-fast file and folder compression for Windows — right-click simple.
 LRGEX Compress does one thing: right-click any file or folder, choose **LRGEX → Compress**,
 and a `.zgx` archive appears next to the original. No settings, no compression-level
 choices, no options to argue with — just the fastest proven compression, every time.
 
-Archives use the `.zgx` format (internally `tar` + `zstd`). Extraction is the reverse:
+Archives use the `.zgx` format. Extraction is the reverse:
 right-click a `.zgx` → **LRGEX → Extract**, and the original tree comes back, empty
 directories included.
 
@@ -22,10 +24,10 @@ directories included.
 
 - **Right-click cascade** — one `LRGEX` entry that opens a Compress / Extract submenu on
   hover (folders, files, and `.zgx` archives)
-- **`.zgx` archive format** — internally `tar` + `zstd` (branded extension, like `.rar`)
-- **WinRAR-style progress window** — colored bar, percent, MB/s, ETA, and a Cancel button
+- **`.zgx` archive format**
+- **Progress window** — colored bar, percent, MB/s, ETA, and a Cancel button
 - **Byte-based progress** — 500 ms heartbeat, spinner, rate, and ETA; the UI never freezes
-- **Genuinely fast** — multi-threaded zstd + parallel reads (all CPU cores), designed for
+- **Genuinely fast** — multi-threaded compression + parallel reads across all CPU cores, designed for
   multi-gigabyte folders
 - **Atomic writes** — `name.zgx.part` is renamed to `name.zgx` only on full success, so an
   interrupted or crashed compress can never leave a half-written archive
