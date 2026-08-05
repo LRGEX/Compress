@@ -1,6 +1,6 @@
 [package]
 name = "lrgex_compress"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "LRGEX Compress — standalone fast .tar.zst compressor/extractor"
 
@@ -22,14 +22,23 @@ slint = "1.10"
 rfd = "0.15"
 ureq = { version = "2", features = ["json"] }
 hex = "0.4"
+rand = "0.8"
 ed25519-dalek = "2"
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_Security"] }
+unrar = "0.5"
+zip = { version = "8", default-features = false, features = ["deflate-flate2-zlib-ng", "deflate64", "bzip2", "zstd", "lzma", "time", "aes-crypto"] }
 
 [build-dependencies]
 winres = "0.1"
+
+[profile.dev.package."*"]
+opt-level = 3
 
 [profile.release]
 opt-level = 3
 lto = "fat"
 codegen-units = 1
 strip = true
+
+[patch.crates-io]
+unrar = { path = "vendor/unrar" }
