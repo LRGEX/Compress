@@ -3,12 +3,6 @@
   <br><br>
   <img src="assets/logo.png" alt="Compress Logo" width="80">
 
- 
-
-</div>
-
-<div align="center">
-
 <div id="toc">
   <ul style="list-style: none">
     <summary>
@@ -17,80 +11,91 @@
   </ul>
 </div>
 
-**Version 1.2.1**
+**Version 1.3.0**
 
 </div>
 
+---
 
-## Description
+## Compress 145,000 files before WinRAR finishes 30%.
 
-Blazing-fast file and folder compression for Windows — right-click simple.
-LRGEX Compress does one thing: right-click any file or folder, choose **LRGEX → Compress**,
-and a `.zgx` archive appears next to the original. No settings, no compression-level
-choices, no options to argue with — just the fastest proven compression, every time.
+That's not marketing — that's a real test. Same folder, same machine, same files.
+LRGEX Compress finished while WinRAR was still showing 29%.
 
-Archives use the `.zgx` format. Extraction is the reverse:
-right-click a `.zgx` → **LRGEX → Extract**, and the original tree comes back, empty
-directories included.
+**How?** Zstandard (zstd). It's a newer compression algorithm designed for speed.
+WinRAR and 7-Zip use older algorithms (RAR, LZMA2) that compress smaller but take
+5-10× longer. LRGEX Compress trades a slightly larger file size for dramatically
+faster speed — and for most people, time matters more than a few extra megabytes.
 
-## Features
+| | LRGEX Compress | WinRAR | 7-Zip |
+|---|---|---|---|
+| **Speed** | Fastest | Moderate | Slow |
+| **Algorithm** | zstd (modern) | RAR (proprietary) | LZMA2 |
+| **File size** | Slightly larger | Smaller | Smallest |
+| **UI** | Right-click, done | Full app | Full app |
+| **Settings** | None | Many | Many |
+| **Price** | Free | Trial nagware | Free |
 
-- **Right-click cascade** — one `LRGEX` entry that opens a Compress / Extract submenu on
-  hover (folders, files, and `.zgx` archives)
-- **`.zgx` archive format**
-- **Progress window** — colored bar, percent, MB/s, ETA, and a Cancel button
-- **Byte-based progress** — 500 ms heartbeat, spinner, rate, and ETA; the UI never freezes
-- **Genuinely fast** — multi-threaded compression + parallel reads across all CPU cores, designed for
-  multi-gigabyte folders
-- **Atomic writes** — `name.zgx.part` is renamed to `name.zgx` only on full success, so an
-  interrupted or crashed compress can never leave a half-written archive
-- **Empty-directory preservation** — extraction restores the exact source tree, including
-  empty folders
-- **Cancel cleans up** — aborting a compress deletes the partial archive, every time
-- **Skip-with-warning** — one locked file does not fail a multi-GB job; the archive still
-  publishes and a `name.zgx.skipped.txt` sidecar lists anything that could not be read
-- **Signed auto-updates** — Ed25519 signature verification on every update; a compromised
-  server cannot push a malicious build
-- **Per-user install** — no UAC prompt, no admin rights required
-- **Self-contained exe** — ~14 MB, zero runtime dependencies, no WebView, no Node
+---
+
+## Right-click. Done.
+
+No app to open. No drag-and-drop. No settings dialog with 15 compression levels.
+
+1. Right-click any file or folder
+2. Click **LRGEX → Compress**
+3. A progress window shows live speed and ETA
+4. Done — `.zgx` archive appears next to your files
+
+That's it. No levels to choose. No options to argue with. The fastest proven settings,
+every time.
+
+---
+
+## Extraction
+
+Right-click any `.zgx`, `.zip`, or `.rar` → **LRGEX → Extract** or **Extract Here**.
+
+Yes — it extracts ZIP and RAR too. You don't need WinRAR or 7-Zip installed.
+
+---
+
+## What makes it different
+
+- **No settings.** No compression level slider. No dictionary size. No "solid archive"
+  checkbox. Just compress and extract.
+- **Atomic writes.** If your PC crashes or loses power mid-compress, you never get a
+  broken half-written archive. The file only appears when it's 100% complete.
+- **Empty folders preserved.** Some archivers drop empty directories silently.
+  LRGEX Compress keeps your exact folder structure — including empty folders.
+- **Cancel is clean.** Click Cancel, the partial archive is deleted. No orphaned files.
+- **Signed auto-updates.** Every update is Ed25519-verified. A hacked server can't push
+  malware — the app refuses anything without your valid signature.
+- **Per-user install.** No admin prompt. No UAC. Works on locked-down corporate machines.
+
+---
 
 ## Installation
 
-1. Download `LRGEX-Compress-v0.1-setup.exe`.
-2. Double-click it — the app installs per-user to `%LOCALAPPDATA%\Programs\LRGEX Compress`
-   with no UAC prompt.
-3. The installer registers the right-click menu and the `.zgx` file association
-   automatically.
-4. Right-click any file or folder → **LRGEX → Compress**.
+1. Download `LRGEX-Compress-v1.3-setup.exe` from [Releases](https://github.com/LRGEX/Compress/releases)
+2. Double-click — installs with no admin prompt
+3. Right-click any file or folder → **LRGEX → Compress**
 
-To uninstall: Add/Remove Programs → LRGEX Compress. The uninstaller removes every
-registry entry it created — nothing is left behind.
+Or install via winget:
+```
+winget install LRGEX.Compress
+```
 
-## Usage
+To uninstall: Settings → Add/Remove Programs → LRGEX Compress. Removes everything.
 
-### Compress
+---
 
-1. In File Explorer, right-click any file or folder.
-2. Select **LRGEX → Compress**.
-3. A progress window opens showing percent, speed, and time remaining.
-4. When it finishes, `<name>.zgx` appears next to the original.
-
-### Extract
-
-1. Right-click any `.zgx` archive.
-2. Select **LRGEX → Extract**.
-3. The archive is extracted to a folder named after it, in the same location.
-
-### Cancel
-
-Click **Cancel** during a compress to abort. The partial archive is deleted — no orphaned
-half-files are left behind.
-
-### Command line
+## Command line
 
 ```bash
 lrgex-compress <folder-or-file>      # compress -> <name>.zgx
 lrgex-compress -x <archive>.zgx      # extract  -> <name>\ folder
+lrgex-compress -x -h <archive>.zgx   # extract here (into current folder)
 ```
 
 ## Requirements
@@ -101,9 +106,3 @@ lrgex-compress -x <archive>.zgx      # extract  -> <name>\ folder
 ## License
 
 MIT License. See [LICENSE](LICENSE).
-
-## Contributing
-
-This project is developed internally at LRGEX. Source layout, build, and deployment
-follow the LRGEX Rust Guidelines. To report issues or request features, open an issue on
-the project repository.
