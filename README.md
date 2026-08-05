@@ -7,7 +7,7 @@
 
 </div>
 <div align="center">
-   # Compress
+# Compress
  **Version 0.1.0**
 </div>
 
