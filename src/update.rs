@@ -93,7 +93,7 @@ pub fn apply_update(info: UpdateInfo) {
         return;
     }
 
-    let temp_exe = std::env::temp_dir().join("lrgex_compress_update.exe");
+    let temp_installer = std::env::temp_dir().join("lrgex-compress-update-setup.exe");
 
     let resp = match ureq::get(&format!("{}?v={}", info.url, info.version))
         .timeout(std::time::Duration::from_secs(120))
@@ -117,8 +117,6 @@ pub fn apply_update(info: UpdateInfo) {
         show_error(&format!("Downloaded file too small: {} bytes.", data.len()));
         return;
     }
-
-    // Verify Ed25519 signature against the public key from signing.pub.
     let sig_hex = match &info.signature {
         Some(s) if !s.is_empty() => s,
         Some(_) => {
@@ -138,26 +136,27 @@ pub fn apply_update(info: UpdateInfo) {
         return;
     }
 
-    if let Err(e) = std::fs::write(&temp_exe, &data) {
+    if let Err(e) = std::fs::write(&temp_installer, &data) {
         show_error(&format!("Save failed: {}", e));
         return;
     }
 
-    // OneDrive-safe .bat self-swapper: waits for this process to exit, then loops
-    // copy /Y until the running exe frees, then relaunches and deletes itself.
+    // Spawn a .bat that waits for the installer to finish, then shows success/failure.
     let bat_path = std::env::temp_dir().join("lrgex-compress-updater.bat");
     let bat = format!(
-        "@echo off\r\nping 127.0.0.1 -n 3 > nul\r\n:retry\r\ncopy /Y \"{}\" \"{}\" >nul 2>&1\r\nif errorlevel 1 (\r\n  ping 127.0.0.1 -n 3 > nul\r\n  goto retry\r\n)\r\ndel \"{}\" >nul 2>&1\r\nstart \"\" \"{}\"\r\ndel \"%~f0\"\r\n",
-        temp_exe.to_string_lossy(),
-        exe_path.to_string_lossy(),
-        temp_exe.to_string_lossy(),
-        exe_path.to_string_lossy()
+        "@echo off\r\n\"{}\" /VERYSILENT /NORESTART /NOCANCEL /SP-\r\nif %errorlevel% equ 0 (\r\n  msg * \"LRGEX Compress updated successfully to v{}\"\r\n) else (\r\n  msg * \"Update failed (installer exit code %errorlevel%)\"\r\n)\r\ndel \"{}\" >nul 2>&1\r\ndel \"%~f0\"\r\n",
+        temp_installer.to_string_lossy(),
+        info.version,
+        temp_installer.to_string_lossy()
     );
     let _ = std::fs::write(&bat_path, bat);
 
     rfd::MessageDialog::new()
         .set_title("Updating")
-        .set_description("Signature verified. The app will restart in a moment with the new version.")
+        .set_description(&format!(
+            "Signature verified. Downloaded v{} installer.\n\nThe app will close and update will install automatically.",
+            info.version
+        ))
         .set_buttons(rfd::MessageButtons::Ok)
         .show();
 
@@ -167,6 +166,7 @@ pub fn apply_update(info: UpdateInfo) {
         .creation_flags(0x08000000u32)
         .spawn();
 
+    // Exit immediately — installer will close this app via CloseApplications=force.
     std::process::exit(0);
 }
 
