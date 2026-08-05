@@ -1,4 +1,25 @@
-# Patch Notes - Version 1.2.1 - Current
+# Patch Notes - Version 1.3.0 - Current
+
+## 🚀 New Features
+
+- **Extract Here**: right-click `.zgx`/`.zip`/`.rar` → LRGEX → Extract Here (extracts to current folder, no subfolder)
+
+## 🔧 Improvements & Changes
+
+- Removed `AppliesTo` from installer (was hiding the right-click menu on all files)
+- Added Extract Here to installer `.iss` for all three archive extensions
+
+## 🐞 Bug Fixes
+
+- Fixed: right-click menu disappeared on all files due to malformed AppliesTo value
+
+## ⚠️ Known Issues
+
+- N/A
+
+---
+
+# Patch Notes - Version 1.2.1
 
 ## 🚀 New Features
 

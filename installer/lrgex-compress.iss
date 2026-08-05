@@ -10,7 +10,7 @@
 ; TO COMPILE: "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\lrgex-compress.iss
 
 #define MyAppName      "LRGEX Compress"
-#define MyAppVersion "1.2.1"
+#define MyAppVersion "1.3.0"
 #define MyAppPublisher "LRGEX"
 #define MyAppExeName   "lrgex-compress.exe"
 
@@ -67,8 +67,6 @@ Root: HKCU; Subkey: "Software\Classes\*\shell\LRGEX"; \
     ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName},0"
 Root: HKCU; Subkey: "Software\Classes\*\shell\LRGEX"; \
     ValueType: string; ValueName: "ExtendedSubCommandsKey"; ValueData: "*\ContextMenus\LRGEX"
-Root: HKCU; Subkey: "Software\Classes\*\shell\LRGEX"; \
-    ValueType: string; ValueName: "AppliesTo"; ValueData: "System.ItemName:<~""*.zgx"" AND System.ItemName:<~""*.zip"" AND System.ItemName:<~""*.rar"""
 Root: HKCU; Subkey: "Software\Classes\*\ContextMenus\LRGEX\shell\compress"; \
     ValueType: string; ValueName: ""; ValueData: "Compress"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\Classes\*\ContextMenus\LRGEX\shell\compress"; \
@@ -99,6 +97,12 @@ Root: HKCU; Subkey: "Software\Classes\LRGEX.zgx\ContextMenus\LRGEX\shell\extract
     ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName},0"
 Root: HKCU; Subkey: "Software\Classes\LRGEX.zgx\ContextMenus\LRGEX\shell\extract\command"; \
     ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" -x ""%1"""
+Root: HKCU; Subkey: "Software\Classes\LRGEX.zgx\ContextMenus\LRGEX\shell\extractHere"; \
+    ValueType: string; ValueName: ""; ValueData: "Extract Here"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\LRGEX.zgx\ContextMenus\LRGEX\shell\extractHere"; \
+    ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName},0"
+Root: HKCU; Subkey: "Software\Classes\LRGEX.zgx\ContextMenus\LRGEX\shell\extractHere\command"; \
+    ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" -x -h ""%1"""
 
 ; ===== .zip and .rar: cascade ONLY under SystemFileAssociations =====
 ; Do NOT take ownership of .zip/.rar — preserves Explorer's built-in zip handler and
@@ -129,6 +133,12 @@ Root: HKCU; Subkey: "Software\Classes\LRGEX.ContextMenus\LRGEX\shell\extract"; \
     ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName},0"
 Root: HKCU; Subkey: "Software\Classes\LRGEX.ContextMenus\LRGEX\shell\extract\command"; \
     ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" -x ""%1"""
+Root: HKCU; Subkey: "Software\Classes\LRGEX.ContextMenus\LRGEX\shell\extractHere"; \
+    ValueType: string; ValueName: ""; ValueData: "Extract Here"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\LRGEX.ContextMenus\LRGEX\shell\extractHere"; \
+    ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName},0"
+Root: HKCU; Subkey: "Software\Classes\LRGEX.ContextMenus\LRGEX\shell\extractHere\command"; \
+    ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" -x -h ""%1"""
 
 [Code]
 const
