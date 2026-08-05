@@ -50,9 +50,9 @@ slint::slint! {
         icon: @image-url("../assets/logo.png");
         background: #1e1e1e;
         preferred-width: 440px;
-        preferred-height: 160px;
+        preferred-height: 180px;
         max-width: 440px;
-        max-height: 160px;
+        max-height: 180px;
 
         in property <string> op-label: "Working";
         in property <string> op-detail: "";
@@ -175,7 +175,7 @@ slint::slint! {
             color: #555555;
             font-size: 10px;
             x: parent.width - self.width - 8px;
-            y: parent.height - self.height - 4px;
+            y: parent.height - self.height - 24px;
         }
     }
 
@@ -242,7 +242,8 @@ fn main() {
 
     // --- COMPRESS path ---
     if args.len() < 2 {
-        show_error("No folder or file was given.");
+        // No arguments — normal after auto-update restart or accidental double-click.
+        // Silently exit instead of showing an error.
         return;
     }
     let own = PathBuf::from(&args[1]);

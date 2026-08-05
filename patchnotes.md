@@ -1,4 +1,108 @@
-# Patch Notes - Version 0.1.0 - Current
+# Patch Notes - Version 1.2.1 - Current
+
+## 🚀 New Features
+
+- N/A
+
+## 🔧 Improvements & Changes
+
+- N/A
+
+## 🐞 Bug Fixes
+
+- N/A
+
+## ⚠️ Known Issues
+
+- N/A
+
+---
+
+# Patch Notes - Version 1.2.0
+
+## 🚀 New Features
+
+- **Installer-based auto-update**: updates now download and run the full installer (not just the bare exe), ensuring registry entries, icons, and file associations are always updated correctly.
+
+## 🔧 Improvements & Changes
+
+- Installer filename now includes full version number (e.g. v1.2.0, not v1.2).
+- `CloseApplications=force` and `RestartApplications=no` added to installer for silent updates.
+- App silently exits when launched with no arguments (fixes post-update restart error).
+
+## 🐞 Bug Fixes
+
+- N/A
+
+## ⚠️ Known Issues
+
+- N/A
+
+---
+
+# Patch Notes - Version 1.1.0
+
+## 🚀 New Features
+
+- N/A
+
+## 🔧 Improvements & Changes
+
+- N/A
+
+## 🐞 Bug Fixes
+
+- N/A
+
+## ⚠️ Known Issues
+
+- N/A
+
+---
+
+# Patch Notes - Version 1.0.0
+
+## 🚀 New Features
+
+- **Multi-format extraction**: `.zip` and `.rar` extraction added alongside `.zgx`. Magic-byte detection (zstd/zip/rar) with extension fallback.
+- **Real `.rar` progress**: vendored unrar 0.5.8 with UCM_PROCESSDATA counter patch for byte-level extraction progress.
+- **Extract Here**: right-click `.zgx`/`.zip`/`.rar` → Extract Here dumps contents into the current folder.
+- **Multi-select compress**: selecting multiple files/folders and right-clicking Compress produces ONE `.zgx` containing all items.
+- **Signed auto-updates**: Ed25519 signature verification, deferred until after operation completes.
+- **8-byte uncompressed total header** in `.zgx` format for accurate extraction progress.
+- **Batch-parallel extraction**: rayon batch writer (2048 entries/64MB) with directory cache for many-small-files workloads.
+- **Version badge** in lower right of progress window.
+- **Shimmer animation** on progress bar fill.
+- **Auto-close** 2s after successful operation.
+- **Cancel kills process** immediately — no orphan threads.
+- **Window icon** from product logo.
+- **op-label/op-detail split**: action word in white bold, filename in silver.
+
+## 🔧 Improvements & Changes
+
+- ZIP backend switched to `deflate-flate2-zlib-ng` (C-accelerated, 4× faster decompression).
+- `[profile.dev.package."*"] opt-level = 3` — dependencies compiled at -O3 even in debug builds.
+- File preallocation (`set_len`) for entries >1MB during extraction.
+- BufReader 256KB between zstd decoder and tar (reduced from 4MB to avoid cache eviction).
+- Removed redundant BufReader before zstd decoder (it reads 128KB chunks natively).
+- Folder name stripping: `x.md` folder → `x.zgx` (not `x.md.zgx`).
+- Stable install path for right-click verbs (survives exe rebuilds).
+
+## 🐞 Bug Fixes
+
+- Empty directories now preserved through compress → extract round-trip.
+- Atomic writes: `name.zgx.part` → `name.zgx` only on full success.
+- Cancel during compress deletes the partial archive.
+- Zip-slip protection (path traversal guard for both `.zip` and `.zgx` extraction).
+- Failed extraction no longer hangs the UI (shows "Failed" instead of freezing).
+
+## ⚠️ Known Issues
+
+- Many-small-files extraction is limited by Windows Defender real-time scanning (~5-15 MB/s). This is a documented Windows limitation, not a code issue.
+
+---
+
+# Patch Notes - Version 0.1.0
 
 ## 🚀 New Features
 

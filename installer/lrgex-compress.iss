@@ -10,7 +10,7 @@
 ; TO COMPILE: "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\lrgex-compress.iss
 
 #define MyAppName      "LRGEX Compress"
-#define MyAppVersion "0.1.0"
+#define MyAppVersion "1.2.1"
 #define MyAppPublisher "LRGEX"
 #define MyAppExeName   "lrgex-compress.exe"
 
@@ -28,7 +28,9 @@ SolidCompression=yes
 ; deploy.ps1 overrides this at compile time via ISCC's /F flag, producing
 ; LRGEX-Compress-v<major>.<minor>-setup.exe. This line is a fallback for manual compiles.
 OutputBaseFilename=lrgex-compress-{#MyAppVersion}-setup
-OutputDir=..
+OutputDir=../target/installer
+CloseApplications=force
+RestartApplications=no
 SetupIconFile=..\assets\icon.ico
 
 [Files]
