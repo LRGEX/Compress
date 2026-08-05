@@ -4,8 +4,7 @@
   <img src="assets/product-logo.png" alt="Compress Logo" width="80">
 
   # Compress
-
-  **Version 0.1.0**
+ **Version 0.1.0**
 
 </div>
 
