@@ -8,10 +8,11 @@
 </div>
 
 <div align="center">
-  
-# Compress
- **Version 0.1.0**
-  
+
+<h1 style="border-bottom: none; margin-bottom: 0;">Compress</h1>
+
+**Version 0.1.0**
+
 </div>
 
 
