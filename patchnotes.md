@@ -3,10 +3,10 @@
 ## 🚀 New Features
 
 - **Right-click compression and extraction**: one `LRGEX` Explorer entry that opens a hover submenu (Compress on folders/files, Extract on `.zgx` archives). Per-user, HKCU only, no UAC.
-- **`.zgx` archive format**: branded extension (internally `tar` + `zstd`), like WinRAR's `.rar`. Double-clicking a `.zgx` extracts it.
-- **WinRAR-style progress window**: colored progress bar, live percent, MB/s, and ETA. A 500 ms heartbeat + animated spinner keep it from ever looking frozen, even on a cold cache.
+- **`.zgx` archive format**: Double-clicking a `.zgx` extracts it.
+- **Progress window**: colored progress bar, live percent, MB/s, and ETA. A 500 ms heartbeat + animated spinner keep it from ever looking frozen, even on a cold cache.
 - **Byte-based progress**: percentage is always `bytes_done / bytes_total` (never file-count), so a single huge file does not sit at a misleading percent.
-- **Multi-threaded compression**: zstd with `zstdmt` + parallel rayon reads across all CPU cores, designed for multi-gigabyte folders.
+- **Multi-threaded compression**: parallel reads across all CPU cores, designed for multi-gigabyte folders.
 - **Atomic archive writes**: compress writes to `<name>.zgx.part` and atomically renames to `<name>.zgx` only on full success, so an interrupted or crashed compress can never leave a complete-looking partial archive.
 - **Empty-directory preservation**: directory entries are archived before their contents, so extraction restores the exact source tree, including empty folders.
 - **Cancel cleans up**: aborting a compress releases the `.part` file and deletes it — no orphaned half-files are left behind.
