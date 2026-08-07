@@ -54,8 +54,12 @@ fn detect_format(path: &Path) -> Option<Format> {
             if head[0..6] == [0x52, 0x61, 0x72, 0x21, 0x1a, 0x07] {
                 return Some(Format::Rar);
             }
-            // zstd — 0x28 0xb5 0x2f 0xfd.
+            // zstd — 0x28 0xb5 0x2f 0xfd (legacy .zgx with no LRGEX magic).
             if head[0..4] == [0x28, 0xb5, 0x2f, 0xfd] {
+                return Some(Format::Zgx);
+            }
+            // LRGEX magic — "LRGEX" (new .zgx format with magic header).
+            if head.len() >= 5 && &head[0..5] == b"LRGEX" {
                 return Some(Format::Zgx);
             }
         }
@@ -106,33 +110,53 @@ fn extract_zgx(archive: &Path, dest: &Path) -> (bool, String) {
         }
     };
 
-    // Read the 8-byte uncompressed total header written during compression.
-    // Detect old archives (no header) by checking if first 4 bytes are zstd magic (28 b5 2f fd).
-    // If so, skip the header read and use compressed size as fallback.
+    // Read first 16 bytes once, then branch on format.
+    //   Case 1: LRGEX magic (bytes 0-4 = "LRGEX") + version 0x01 → NEW format.
+    //           Total at bytes 6-13, zstd stream at byte 14.
+    //   Case 2: LRGEX magic + unknown version → refuse (newer format).
+    //   Case 3: No LRGEX magic, but zstd magic (28 B5 2F FD) at byte 8 → LEGACY.
+    //           Total at bytes 0-7, zstd stream at byte 8 (exactly as today).
+    //   Case 4: Anything else → refuse (not a valid archive).
     use std::io::{Read, Seek, SeekFrom};
     let mut file = file;
-    let mut magic = [0u8; 4];
-    let uncompressed_total = if file.read_exact(&mut magic).is_ok() {
-        if magic == [0x28, 0xb5, 0x2f, 0xfd] {
-            // Old archive — first 4 bytes are zstd magic, no header.
-            let _ = file.seek(SeekFrom::Start(0));
-            arch_size
-        } else {
-            // New archive — first 8 bytes are the uncompressed total.
-            let mut rest = [0u8; 4];
-            if file.read_exact(&mut rest).is_ok() {
-                let mut header = [0u8; 8];
-                header[..4].copy_from_slice(&magic);
-                header[4..].copy_from_slice(&rest);
-                let val = u64::from_le_bytes(header);
-                if val > 0 && val < arch_size * 100 { val } else { arch_size }
-            } else {
-                let _ = file.seek(SeekFrom::Start(0));
-                arch_size
-            }
+    let mut head = [0u8; 16];
+    let bytes_read = file.read(&mut head).unwrap_or(0);
+    let zstd_magic = [0x28u8, 0xb5, 0x2f, 0xfd];
+    let lrgex_magic = *b"LRGEX";
+
+    let (uncompressed_total, zstd_start_offset) = if bytes_read >= 6 && head[0..5] == lrgex_magic {
+        // LRGEX magic present.
+        let version = head[5];
+        if version != 0x01 {
+            prog.finish(4);
+            let _ = heartbeat.join();
+            return (false, "This archive was created by a newer version of LRGEX Compress. Please update.".to_string());
         }
+        // NEW format: total at bytes 6-13, zstd at byte 14.
+        if bytes_read < 14 {
+            prog.finish(4);
+            let _ = heartbeat.join();
+            return (false, "Truncated LRGEX archive header.".to_string());
+        }
+        let total = u64::from_le_bytes([head[6], head[7], head[8], head[9], head[10], head[11], head[12], head[13]]);
+        let val = if total > 0 && total < arch_size * 100 { total } else { arch_size };
+        // Seek to byte 14 for the zstd decoder.
+        let _ = file.seek(SeekFrom::Start(14));
+        (val, 14)
+    } else if bytes_read >= 12 && head[8..12] == zstd_magic {
+        // LEGACY archive: 8-byte total at bytes 0-7, zstd at byte 8.
+        let total = u64::from_le_bytes([head[0], head[1], head[2], head[3], head[4], head[5], head[6], head[7]]);
+        let val = if total > 0 && total < arch_size * 100 { total } else { arch_size };
+        let _ = file.seek(SeekFrom::Start(8));
+        (val, 8)
+    } else if bytes_read >= 4 && head[0..4] == zstd_magic {
+        // Very old archive: no 8-byte total, zstd magic at byte 0.
+        let _ = file.seek(SeekFrom::Start(0));
+        (arch_size, 0)
     } else {
-        arch_size
+        prog.finish(4);
+        let _ = heartbeat.join();
+        return (false, "Not a valid LRGEX archive.".to_string());
     };
     prog.set_totals(0, uncompressed_total);
 
