@@ -261,7 +261,6 @@ fn log_update_issue(reason: &str) {
         .ok();
     if let Some(path) = log_path {
         use std::io::Write;
-        use std::os::windows::ffi::OsStrExt;
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
