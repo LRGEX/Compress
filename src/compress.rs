@@ -393,8 +393,12 @@ pub fn compress_folder(
                                 Ok(f) => match f.metadata() {
                                     Ok(m) => {
                                         let mut h = make_header(m.len(), e.meta.mtime, 0o644);
-                                        let mut br = ByteReader::new(f, progress.clone());
-                                        builder.append_data(&mut h, &e.rel, &mut br)
+                                        // BufReader between ByteReader and tar: tar reads in 512-byte
+                                        // blocks, which would be billions of tiny read() syscalls on
+                                        // a multi-GB file. BufReader batches them into 4 MB reads.
+                                        let br = ByteReader::new(f, progress.clone());
+                                        let mut buf = std::io::BufReader::with_capacity(4 * 1024 * 1024, br);
+                                        builder.append_data(&mut h, &e.rel, &mut buf)
                                     }
                                     Err(err) => Err(err),
                                 },
@@ -616,8 +620,9 @@ pub fn compress_paths(
                             Ok(f) => match f.metadata() {
                                 Ok(m) => {
                                     let mut h = make_header(m.len(), e.meta.mtime, 0o644);
-                                    let mut br = ByteReader::new(f, progress.clone());
-                                    builder.append_data(&mut h, &e.rel, &mut br)
+                                    let br = ByteReader::new(f, progress.clone());
+                                    let mut buf = std::io::BufReader::with_capacity(4 * 1024 * 1024, br);
+                                    builder.append_data(&mut h, &e.rel, &mut buf)
                                 }
                                 Err(err) => Err(err),
                             },
