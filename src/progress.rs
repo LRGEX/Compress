@@ -145,7 +145,7 @@ impl Progress {
 pub struct ByteReader<R: Read> {
     inner: R,
     progress: Progress,
-    cancel: Option<*const AtomicBool>, // raw pointer to the cancel flag on the caller's stack
+    cancel: Option<*const AtomicBool>,
 }
 
 impl<R: Read> ByteReader<R> {
@@ -153,10 +153,6 @@ impl<R: Read> ByteReader<R> {
         Self { inner, progress, cancel: None }
     }
 
-    /// Attach a cancel flag. When set, the next read() returns Err (interrupting
-    /// the tar append_data stream and allowing the compress loop to detect cancel).
-    /// Uses a raw pointer because AtomicBool is not Sync but we only read it from
-    /// the same thread that owns it.
     pub fn with_cancel(inner: R, progress: Progress, cancel: &AtomicBool) -> Self {
         Self { inner, progress, cancel: Some(cancel as *const AtomicBool) }
     }
@@ -164,13 +160,12 @@ impl<R: Read> ByteReader<R> {
 
 impl<R: Read> Read for ByteReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        // Check cancel flag BEFORE reading. If set, return an error to abort the stream.
         if let Some(cancel_ptr) = self.cancel {
-            // Safety: the AtomicBool lives on the caller's stack and is only accessed
-            // from this thread (the compress thread). The main thread sets it via
-            // AtomicBool::store, which is safe across threads.
             if unsafe { (*cancel_ptr).load(Ordering::Relaxed) } {
-                return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "cancelled"));
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "LRGEX_CANCELLED",
+                ));
             }
         }
         let n = self.inner.read(buf)?;

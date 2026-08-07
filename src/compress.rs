@@ -408,8 +408,8 @@ pub fn compress_folder(
                     }
                 }
             };
-            if let Err(err) = &res {
-                if err.kind() == std::io::ErrorKind::Interrupted {
+            if let Err(_err) = &res {
+                if cancel.load(Ordering::Relaxed) {
                     cancelled = true;
                 } else {
                     skipped.push(e.path.to_string_lossy().to_string());
@@ -634,8 +634,8 @@ pub fn compress_paths(
                     }
                 }
             };
-            if let Err(err) = &res {
-                if err.kind() == std::io::ErrorKind::Interrupted {
+            if let Err(_err) = &res {
+                if cancel.load(Ordering::Relaxed) {
                     cancelled = true;
                 } else {
                     skipped.push(e.path.to_string_lossy().to_string());
