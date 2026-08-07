@@ -179,9 +179,7 @@ procedure RemoveAppFromPath();
 var
   CurrentPath: string;
   AppDir: string;
-  PathParts: TArrayOfString;
   NewPath: string;
-  i: Integer;
   Found: Boolean;
 begin
   AppDir := ExpandConstant('{app}');
