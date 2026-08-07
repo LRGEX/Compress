@@ -132,7 +132,14 @@ try {
     if ($publicManifest -notmatch $version) { Fail "Verify" "Public URL does not contain version $version" }
     if ($publicManifest -notmatch $signature) { Fail "Verify" "Public URL does not contain correct signature" }
     # Verify the detached manifest signature is also served and matches what we signed.
-    $publicSig = (Invoke-WebRequest "$DOWNLOAD_BASE/latest.json.sig" -UseBasicParsing -TimeoutSec 15).Content.Trim()
+    $sigResponse = Invoke-WebRequest "$DOWNLOAD_BASE/latest.json.sig" -UseBasicParsing -TimeoutSec 15
+    # Content may come back as a string or byte array depending on server MIME type.
+    # Handle both: convert bytes to string, then trim whitespace/newlines.
+    $publicSig = if ($sigResponse.Content -is [byte[]]) {
+        [System.Text.Encoding]::UTF8.GetString($sigResponse.Content).Trim()
+    } else {
+        $sigResponse.Content.Trim()
+    }
     if ($publicSig -ne $manifestSig) {
         Fail "Verify" "Public latest.json.sig does not match the signed manifest signature"
     }
@@ -176,14 +183,18 @@ if ($LASTEXITCODE -eq 0) {
 # Finding #4: Verify the GitHub release asset size-matches via the API.
 # The green banner's contract requires EVERY gate to pass, including GitHub.
 # Uses the GitHub API (not HTTP HEAD) to avoid CDN propagation lag.
-$ghAssetSize = [int64](gh release view $tag --json assets -q ".assets[] | select(.name==\"$installerName.exe\") | .size" 2>$null)
-if ($LASTEXITCODE -ne 0 -or $ghAssetSize -eq 0) {
+$ghAssetsJson = gh release view $tag --json assets 2>$null | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0 -or -not $ghAssetsJson) {
     Fail "GitHub" "Cannot verify GitHub release asset via API (exit $LASTEXITCODE)"
 }
-if ($ghAssetSize -ne $localSize) {
-    Fail "GitHub" "GitHub asset size mismatch: local=$localSize remote=$ghAssetSize"
+$ghAsset = $ghAssetsJson.assets | Where-Object { $_.name -eq "$installerName.exe" } | Select-Object -First 1
+if (-not $ghAsset) {
+    Fail "GitHub" "GitHub release does not contain asset: $installerName.exe"
 }
-Write-Host "      GitHub asset verified: $ghAssetSize bytes" -ForegroundColor Green
+if ([int64]$ghAsset.size -ne $localSize) {
+    Fail "GitHub" "GitHub asset size mismatch: local=$localSize remote=$($ghAsset.size)"
+}
+Write-Host "      GitHub asset verified: $($ghAsset.size) bytes" -ForegroundColor Green
 Remove-Item $notesFile -ErrorAction SilentlyContinue
 
 # ========== STEP 8: DONE ==========
