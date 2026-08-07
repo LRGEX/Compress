@@ -1,4 +1,31 @@
-# Patch Notes - Version 1.3.0 - Current
+# Patch Notes - Version 1.4.0 - Current
+
+## 🛡️ Data Integrity — Full Metadata Preservation
+
+LRGEX Compress now preserves your files **exactly** across a compress → extract round-trip.
+Whatever goes into the archive comes out identical — no more "every extracted file shows today's date."
+
+- **LastWriteTime (mtime)** preserved on every file and folder — sort-by-date, build systems, sync tools, and incremental backups all keep working correctly.
+- **CreationTime (ctime)** preserved — the original creation date is restored, not lost.
+- **Windows attributes** preserved — Hidden, Read-only, System, and Archive flags survive the round-trip. A hidden file extracts hidden; a read-only file extracts read-only.
+- **Symbolic links / junctions** preserved — links recreate as links. On Windows, creating a link needs Administrator or Developer Mode; LRGEX asks **once** ("allow admin?") and, if yes, re-launches the extraction elevated to recreate every link exactly. If you decline, links degrade gracefully (never aborts the whole extraction).
+- **Directory timestamps** restored in a final pass — so writing children into a folder doesn't overwrite the folder's original mtime.
+
+### How it works
+
+`.zgx` archives (tar + zstd) now carry real metadata via the standard tar `mtime` field
+and PAX local extensions (`SCHILY.creationtime`, `LRGEX.fileattr`). `.zip` and `.rar`
+extraction also restores the timestamps and attributes those archives already contain.
+
+### Note on speed
+
+Metadata preservation adds one `SetFileTime` + one `SetFileAttributes` call per file —
+the cost of restoring everything faithfully. Extraction is slightly slower than 1.3.0
+as a result, but the round-trip is now fully **lossless**.
+
+---
+
+# Patch Notes - Version 1.3.0
 
 ## 🚀 New Features
 
