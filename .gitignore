@@ -22,3 +22,6 @@ deploy.bat
 register-debug.ps1
 unregister-debug.ps1
 vendor/unrar/data/
+
+# pi agent working state (local only)
+.pi/
