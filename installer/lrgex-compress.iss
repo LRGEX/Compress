@@ -31,6 +31,7 @@ OutputBaseFilename=lrgex-compress-{#MyAppVersion}-setup
 OutputDir=../target/installer
 CloseApplications=force
 RestartApplications=no
+ChangesEnvironment=yes
 SetupIconFile=..\assets\icon.ico
 
 [Files]
@@ -148,16 +149,81 @@ const
 procedure SHChangeNotify(wEventId: Integer; uFlags: Integer; dwItem1: Longint; dwItem2: Longint);
 external 'SHChangeNotify@shell32.dll stdcall';
 
+// Add the app directory to the user's PATH environment variable (HKCU\Environment).
+// Guards against duplicates: if the path is already there (e.g., from a previous install),
+// we don't add it again.
+// Uses REG_EXPAND_SZ so any embedded %variables% in PATH expand correctly.
+procedure AddAppToPath();
+var
+  CurrentPath: string;
+  AppDir: string;
+begin
+  AppDir := ExpandConstant('{app}');
+  if not RegQueryStringValue(HKEY_CURRENT_USER, 'Environment', 'Path', CurrentPath) then begin
+    // No PATH exists yet for this user — create it.
+    RegWriteExpandStringValue(HKEY_CURRENT_USER, 'Environment', 'Path', AppDir);
+    exit;
+  end;
+  // Check for duplicate (case-insensitive, wrapping in semicolons to handle edge cases).
+  if Pos(';' + UpperCase(AppDir) + ';', ';' + UpperCase(CurrentPath) + ';') > 0 then
+    exit; // Already in PATH — don't duplicate.
+  // Append to PATH (ensure a semicolon separator).
+  if (CurrentPath <> '') and (CurrentPath[Length(CurrentPath)] <> ';') then
+    CurrentPath := CurrentPath + ';';
+  RegWriteExpandStringValue(HKEY_CURRENT_USER, 'Environment', 'Path', CurrentPath + AppDir);
+end;
+
+// Remove the app directory from the user's PATH on uninstall.
+// Reads PATH, removes ONLY the app entry (case-insensitive), preserves everything else.
+procedure RemoveAppFromPath();
+var
+  CurrentPath: string;
+  AppDir: string;
+  PathParts: TArrayOfString;
+  NewPath: string;
+  i: Integer;
+  Found: Boolean;
+begin
+  AppDir := ExpandConstant('{app}');
+  if not RegQueryStringValue(HKEY_CURRENT_USER, 'Environment', 'Path', CurrentPath) then
+    exit; // No PATH to remove from.
+  // Split PATH into parts by semicolon, filter out the app dir, rejoin.
+  NewPath := '';
+  Found := False;
+  // Split manually (Inno Setup doesn't have a built-in split)
+  CurrentPath := CurrentPath + ';'; // ensure trailing delimiter for clean parsing
+  while Pos(';', CurrentPath) > 0 do begin
+    if UpperCase(Copy(CurrentPath, 1, Pos(';', CurrentPath) - 1)) = UpperCase(AppDir) then
+      Found := True // skip this entry
+    else if Copy(CurrentPath, 1, Pos(';', CurrentPath) - 1) <> '' then begin
+      if NewPath <> '' then
+        NewPath := NewPath + ';';
+      NewPath := NewPath + Copy(CurrentPath, 1, Pos(';', CurrentPath) - 1);
+    end;
+    Delete(CurrentPath, 1, Pos(';', CurrentPath));
+  end;
+  if not Found then exit; // App wasn't in PATH — nothing to do.
+  // Write back the cleaned PATH.
+  if NewPath = '' then
+    RegDeleteValue(HKEY_CURRENT_USER, 'Environment', 'Path')
+  else
+    RegWriteExpandStringValue(HKEY_CURRENT_USER, 'Environment', 'Path', NewPath);
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
-  if CurStep = ssPostInstall then
+  if CurStep = ssPostInstall then begin
+    AddAppToPath();
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, 0, 0);
+  end;
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
-  if CurUninstallStep = usPostUninstall then
+  if CurUninstallStep = usPostUninstall then begin
+    RemoveAppFromPath();
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, 0, 0);
+  end;
 end;
 
 [UninstallDelete]
