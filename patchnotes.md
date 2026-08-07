@@ -1,4 +1,4 @@
-# Patch Notes - Version 1.4.0 - Current
+# Patch Notes - Version 1.4.1 - Current
 
 ## 🛡️ Data Integrity — Full Metadata Preservation
 
@@ -11,21 +11,37 @@ Whatever goes into the archive comes out identical — no more "every extracted 
 - **Symbolic links / junctions** preserved — links recreate as links. On Windows, creating a link needs Administrator or Developer Mode; LRGEX asks **once** ("allow admin?") and, if yes, re-launches the extraction elevated to recreate every link exactly. If you decline, links degrade gracefully (never aborts the whole extraction).
 - **Directory timestamps** restored in a final pass — so writing children into a folder doesn't overwrite the folder's original mtime.
 
-### How it works
+NTFS alternate data streams are not supported (rarely used; not planned).
 
-`.zgx` archives (tar + zstd) now carry real metadata via the standard tar `mtime` field
-and PAX local extensions (`SCHILY.creationtime`, `LRGEX.fileattr`). `.zip` and `.rar`
-extraction also restores the timestamps and attributes those archives already contain.
+## ⚡ Performance — Extract & Compress Wins
 
-### Note on speed
+- **Metadata sidecar** (`.lrgex/meta.bin`): one small packed blob at the front of the
+  archive replaces 11k+ per-entry metadata headers on big folders. Both compress and
+  extract handle roughly half as many tar entries now. Old v1.4.0 archives still read
+  correctly via the per-entry fallback.
+- **One-syscall metadata restore** (`SetFileInformationByHandle`): mtime + ctime +
+  attributes set in a single call on the already-open file handle — no per-file re-open.
+- **Direct 4 MB chunked writes** on large-file extract (no redundant `BufWriter` copy).
+- **Cache-served metadata on compress walk** (`DirEntry::metadata()` instead of a fresh
+  `CreateFile` per file) — saves thousands of syscalls on big folders.
+- **Removed the redundant 4 MB `BufWriter`** on compress output — zstd already emits
+  good-sized blocks; the buffer was a pure memcpy of every compressed byte.
+- **Tuned zstd multithreading** — `JobSize(16MB)` + `OverlapSizeLog(0)` at level 1,
+  fewer thread handoffs.
+- **Dedicated oversubscribed write pool** (3× core count) for extraction writes —
+  correct sizing for workers that block in `CreateFile` and Defender scans.
 
-Metadata preservation adds one `SetFileTime` + one `SetFileAttributes` call per file —
-the cost of restoring everything faithfully. Extraction is slightly slower than 1.3.0
-as a result, but the round-trip is now fully **lossless**.
+## 🐞 Fixes
+
+- **Multi-select coordinator hardened**: handles `WAIT_ABANDONED` (previous instance
+  crashed holding the mutex) and stale coordinator-PID lockfiles — a second rapid launch
+  can no longer silently no-op.
+- Round-trip verified lossless: mtime/ctime/Hidden/ReadOnly/System, Unicode names,
+  deeply nested paths, and a 3000-file stress batch (SHA256-checked).
 
 ---
 
-# Patch Notes - Version 1.3.0
+# Patch Notes - Version 1.4.0
 
 ## 🚀 New Features
 
