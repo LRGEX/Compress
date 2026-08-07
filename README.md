@@ -111,6 +111,30 @@ lrgex-compress --help                # show usage
 - Windows 10/11
 - ~20 MB free disk space
 
+## `.zgx` file format
+
+A `.zgx` file is a `tar.zst` archive (tar stream compressed with zstd) with a small
+LRGEX header for identification.
+
+**New format (v1.4.1+):**
+```
+bytes 0-4    : ASCII "LRGEX" (magic header)
+byte  5      : format version (0x01)
+bytes 6-13   : uncompressed total size (u64 little-endian, for progress accuracy)
+bytes 14+    : zstd-compressed tar stream
+```
+
+**Legacy format (pre-v1.4.1):**
+```
+bytes 0-7    : uncompressed total size (u64 little-endian)
+bytes 8+     : zstd-compressed tar stream
+```
+
+The extractor detects both formats automatically. Legacy archives continue to extract
+without any conversion.
+
+---
+
 ## License
 
 MIT License for LRGEX-authored code. See [LICENSE](LICENSE).

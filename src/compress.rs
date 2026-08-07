@@ -273,10 +273,11 @@ pub fn compress_folder(
     };
     let writer = file;
 
-    // Write 8-byte little-endian uncompressed total as a header BEFORE the zstd stream.
-    // Extraction reads this to set accurate progress totals without a pre-scan.
-    use std::io::Write;
+    // Write the 6-byte LRGEX magic header ("LRGEX" + version 0x01), then the 8-byte
+    // uncompressed total, then the zstd stream. Legacy archives (pre-magic) have no
+    // magic — the extractor detects them by zstd magic at byte 8.
     let mut header_writer = writer;
+    let _ = header_writer.write_all(b"LRGEX\x01");
     let _ = header_writer.write_all(&total_bytes.to_le_bytes());
 
     let mut encoder = match zstd::Encoder::new(header_writer, 1) {
@@ -513,9 +514,10 @@ pub fn compress_paths(
     };
     let writer = file;
 
-    // Write 8-byte little-endian uncompressed total as a header BEFORE the zstd stream.
+    // Write the 6-byte LRGEX magic header + 8-byte uncompressed total before the zstd stream.
     use std::io::Write;
     let mut header_writer = writer;
+    let _ = header_writer.write_all(b"LRGEX\x01");
     let _ = header_writer.write_all(&total_bytes.to_le_bytes());
 
     let mut encoder = match zstd::Encoder::new(header_writer, 1) {
@@ -685,13 +687,13 @@ mod tests {
         assert!(ok, "compress failed");
         assert!(skipped.is_empty(), "files skipped: {:?}", skipped);
 
-        // 1) The empty dir MUST be an entry in the archive. Skip the 8-byte
-        //    uncompressed-total header our compressor writes BEFORE the zstd stream.
+        // 1) The empty dir MUST be an entry in the archive. Skip the 6-byte LRGEX magic
+        //    + 8-byte uncompressed-total header (14 bytes total) before the zstd stream.
         let f = std::fs::File::open(&archive).unwrap();
         let mut buf = std::io::BufReader::new(f);
-        let mut header = [0u8; 8];
+        let mut header = [0u8; 14];
         use std::io::Read;
-        let _ = buf.read_exact(&mut header); // consume the 8-byte total
+        let _ = buf.read_exact(&mut header); // consume the 14-byte header
         let dec = zstd::Decoder::new(buf).unwrap();
         let mut tar = tar::Archive::new(dec);
         let names: Vec<String> = tar
@@ -706,7 +708,7 @@ mod tests {
         std::fs::create_dir_all(&out).unwrap();
         let f2 = std::fs::File::open(&archive).unwrap();
         let mut buf2 = std::io::BufReader::new(f2);
-        let mut header2 = [0u8; 8];
+        let mut header2 = [0u8; 14];
         let _ = buf2.read_exact(&mut header2);
         let dec2 = zstd::Decoder::new(buf2).unwrap();
         tar::Archive::new(dec2).unpack(&out).unwrap();
