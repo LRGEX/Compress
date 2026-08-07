@@ -126,7 +126,6 @@ pub fn check_version_only() -> Option<UpdateInfo> {
 /// and the Slint window has already closed (post-join). Exits the process on success.
 pub fn apply_update(info: UpdateInfo) {
     let current = env!("CARGO_PKG_VERSION");
-    let exe_path = std::env::current_exe().unwrap_or_default();
 
     let confirm = rfd::MessageDialog::new()
         .set_title("Update Available")
