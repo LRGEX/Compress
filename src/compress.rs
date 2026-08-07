@@ -20,7 +20,13 @@ use rayon::prelude::*;
 use crate::metaattr::{self, MetaSnapshot};
 use crate::progress::{self, ByteReader, Progress};
 
-const BIG_FILE: u64 = 8 * 1024 * 1024; // stream these instead of preloading
+// Files up to this size are preloaded into RAM via parallel rayon reads.
+// Larger files stream through ByteReader (avoids OOM on multi-GB files).
+// Note: for pre-compressed data (e.g. FitGirl .bin repacks), zstd level 1 is inherently
+// slow — the encoder processes every byte even if the data is incompressible. This is
+// a zstd/algorithm limitation, not a code bug. Parallel reads don't help on a single
+// NVMe drive (sequential read is already near-peak).
+const BIG_FILE: u64 = 64 * 1024 * 1024; // 64 MB — balances RAM vs parallelism
 const BATCH: usize = 2048; // parallel-read batch size
 
 /// Kind of entry being archived. Symlinks carry their target so we can recreate the

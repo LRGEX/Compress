@@ -426,7 +426,7 @@ fn run_one(op_label: String, op_detail: Option<String>, cancellable: bool, dest:
                     app.set_result_color(slint::Color::from_rgb_u8(0xcb, 0x80, 0x3c));
                     // Cancel: kill the process immediately after showing the message.
                     // No waiting for the operation thread — it may be stuck in a blocking call.
-                    close_timer.start(TimerMode::SingleShot, Duration::from_millis(500), move || {
+                    close_timer.start(TimerMode::SingleShot, Duration::from_millis(200), move || {
                         std::process::exit(0);
                     });
                 }

@@ -41,6 +41,11 @@ use windows_sys::Win32::{
 const MUTEX_NAME: &str = "Global\\LRGEX-Compress-MultiSelect";
 const QUIET_WINDOW: Duration = Duration::from_millis(400);
 const HARD_CAP: Duration = Duration::from_secs(3);
+// When selecting many files (e.g. select-all in a folder with 50+ files), Explorer
+// can take 200-500ms to launch all instances. The old 60ms early-poll was too short
+// — the coordinator saw only 1-2 files and bailed early, compressing just the first
+// file instead of the full selection. 300ms gives Explorer time to fire all launches.
+const EARLY_POLL: Duration = Duration::from_millis(300);
 
 fn roster_path() -> PathBuf {
     // PID-unique so concurrent sessions (rare) never collide.
@@ -125,7 +130,6 @@ fn collect_as_coordinator(own: PathBuf, pid: u32) -> Vec<PathBuf> {
     // multi-select launches within tens of ms, so if nothing shows up in EARLY_POLL we
     // are almost certainly a single-item invocation — bail out with just our own path.
     // Avoids the full QUIET_WINDOW debounce penalty on the common case.
-    const EARLY_POLL: Duration = Duration::from_millis(60);
     let early_deadline = Instant::now() + EARLY_POLL;
     while Instant::now() < early_deadline {
         let lines = std::fs::read_to_string(&roster).unwrap_or_default();
