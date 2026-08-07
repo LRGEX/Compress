@@ -39,6 +39,21 @@ NTFS alternate data streams are not supported (rarely used; not planned).
 - Round-trip verified lossless: mtime/ctime/Hidden/ReadOnly/System, Unicode names,
   deeply nested paths, and a 3000-file stress batch (SHA256-checked).
 
+## 🔒 Security Hardening
+
+- **Signed manifest (detached `latest.json.sig`)**: the auto-update manifest is now
+  cryptographically signed with Ed25519, preventing a compromised server from injecting
+  a fake version or download URL.
+- **Download size cap (100 MB)**: the updater rejects files exceeding 100 MB, preventing
+  memory exhaustion from a poisoned manifest pointing at a huge file.
+- **Update-channel logging**: failed update checks now write to `update.log` in the
+  install folder, so silent update-channel failures are observable.
+- **GitHub release asset verification**: `deploy.ps1` now size-verifies the GitHub
+  release asset via the API, not just the exit code.
+- **Path-length guard**: right-clicking a file with a path longer than 247 characters
+  shows a clear error instead of a confusing "not found".
+- **Slint attribution**: added "Made with Slint" badge (Slint Royalty-free License §2).
+
 ---
 
 # Patch Notes - Version 1.4.0
