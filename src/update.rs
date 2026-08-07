@@ -45,23 +45,70 @@ pub struct UpdateInfo {
     signature: Option<String>,
 }
 
-/// Cheap version check: fetch latest.json, compare to the running version.
+/// Cheap version check: fetch latest.json + latest.json.sig, verify the manifest
+/// signature BEFORE trusting any fields, then compare to the running version.
 /// Returns `Some(UpdateInfo)` if a newer version exists, else `None`.
-/// Silently returns `None` on any network error — never blocks or prompts.
+/// On network error, logs the failure to a local file (Finding #3: update-channel
+/// observability) and returns None — never blocks or prompts.
 pub fn check_version_only() -> Option<UpdateInfo> {
     let current = env!("CARGO_PKG_VERSION");
 
-    let response = match ureq::get(MANIFEST_URL)
+    // Fetch the manifest body as RAW bytes (NOT via into_string which decodes→re-encodes
+    // and could alter bytes if the charset isn't UTF-8). We verify the signature over
+    // the exact transport bytes — same principle as the detached-sig decision.
+    let manifest_resp = match ureq::get(MANIFEST_URL)
         .timeout(std::time::Duration::from_secs(10))
         .call()
     {
         Ok(r) => r,
-        Err(_) => return None,
+        Err(e) => {
+            log_update_issue(&format!("version check fetch failed: {}", e));
+            return None;
+        }
     };
+    let mut manifest_bytes = Vec::new();
+    if let Err(e) = manifest_resp.into_reader().read_to_end(&mut manifest_bytes) {
+        log_update_issue(&format!("manifest read failed: {}", e));
+        return None;
+    }
 
-    let manifest: Manifest = match response.into_json() {
+    // Fetch the detached manifest signature (latest.json.sig).
+    let sig_resp = match ureq::get(&format!("{}.sig", MANIFEST_URL))
+        .timeout(std::time::Duration::from_secs(10))
+        .call()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            log_update_issue(&format!("manifest sig fetch failed: {}", e));
+            return None;
+        }
+    };
+    let mut sig_bytes = Vec::new();
+    if let Err(e) = sig_resp.into_reader().read_to_end(&mut sig_bytes) {
+        log_update_issue(&format!("manifest sig read failed: {}", e));
+        return None;
+    }
+    let manifest_sig_hex = String::from_utf8_lossy(&sig_bytes).trim().to_string();
+
+    // Verify the manifest signature over the RAW transport bytes before trusting anything.
+    // Finding #1: This closes the trust-boundary gap — a compromised server can't
+    // inject a fake version/URL because the manifest itself is now signed.
+    if manifest_sig_hex.is_empty() {
+        log_update_issue("manifest signature is empty");
+        return None;
+    }
+    if let Err(e) = verify_signature(&manifest_bytes, &manifest_sig_hex) {
+        log_update_issue(&format!("manifest signature verification FAILED: {}", e));
+        return None; // Don't trust an unverified manifest.
+    }
+
+    // Signature verified — NOW safe to parse the manifest fields.
+    let manifest: Manifest = match serde_json::from_slice(&manifest_bytes) {
         Ok(m) => m,
-        Err(_) => return None,
+        Err(e) => {
+            log_update_issue(&format!("manifest parse failed: {}", e));
+            return None;
+        }
     };
 
     if !is_newer(&manifest.version, current) {
@@ -107,9 +154,21 @@ pub fn apply_update(info: UpdateInfo) {
     };
 
     let mut reader = resp.into_reader();
+    // Finding #2: Cap download at 100 MB to prevent memory exhaustion DoS from a
+    // poisoned manifest. The installer is ~17 MB; 100 MB is generous headroom.
+    const MAX_INSTALLER_BYTES: u64 = 100 * 1024 * 1024;
+    let mut limited = reader.take(MAX_INSTALLER_BYTES);
     let mut data = Vec::new();
-    if let Err(e) = reader.read_to_end(&mut data) {
+    if let Err(e) = limited.read_to_end(&mut data) {
         show_error(&format!("Read failed: {}", e));
+        return;
+    }
+    // If we hit the cap exactly, the file is suspiciously large — abort.
+    if data.len() as u64 >= MAX_INSTALLER_BYTES {
+        show_error(&format!(
+            "Downloaded file exceeds maximum expected size ({} MB). Aborted for safety.",
+            MAX_INSTALLER_BYTES / (1024 * 1024)
+        ));
         return;
     }
 
@@ -191,6 +250,26 @@ fn show_error(msg: &str) {
         .set_description(msg)
         .set_buttons(rfd::MessageButtons::Ok)
         .show();
+}
+
+/// Finding #3: Log update-channel issues to a local file so failures are observable.
+/// Writes a single timestamped line to %LOCALAPPDATA%\LRGEX Compress\update.log.
+/// No PII, no network — just enough to diagnose why updates stopped working.
+fn log_update_issue(reason: &str) {
+    let log_path = std::env::var("LOCALAPPDATA")
+        .map(|d| std::path::PathBuf::from(d).join("LRGEX Compress").join("update.log"))
+        .ok();
+    if let Some(path) = log_path {
+        use std::io::Write;
+        use std::os::windows::ffi::OsStrExt;
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            let _ = writeln!(f, "[{}] {}", timestamp, reason);
+        }
+    }
 }
 
 fn is_newer(remote: &str, current: &str) -> bool {
