@@ -225,6 +225,12 @@ fn main() {
         let extract_here = args.len() >= 4 && args[2] == "-h";
         let archive_path = if extract_here { &args[3] } else { &args[2] };
         let archive = PathBuf::from(archive_path);
+        // Finding #5: Path-length guard — Windows MAX_PATH is 260; paths near or over
+        // that fail with a confusing "not found". Give a clear error instead.
+        if archive.as_os_str().len() > 247 {
+            show_error(&format!("Path too long ({} characters).\nMove the file to a shorter path and try again.\n\n{}", archive.as_os_str().len(), archive.display()));
+            return;
+        }
         if !archive.is_file() {
             show_error(&format!("Archive not found:\n{}", archive.display()));
             return;
@@ -248,6 +254,11 @@ fn main() {
         return;
     }
     let own = PathBuf::from(&args[1]);
+    // Finding #5: Path-length guard for compress path too.
+    if own.as_os_str().len() > 247 {
+        show_error(&format!("Path too long ({} characters).\nMove the item to a shorter path and try again.\n\n{}", own.as_os_str().len(), own.display()));
+        return;
+    }
     if !own.is_dir() && !own.is_file() {
         show_error(&format!("Not found:\n{}", own.display()));
         return;
