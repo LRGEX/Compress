@@ -15,6 +15,8 @@
 
 Free, open source, MIT licensed.
 
+[<img src="https://slint.dev/logo/slint-logo-simple-light.png" width="100" alt="Made with Slint">](https://slint.dev)
+
 </div>
 
 ---
@@ -111,4 +113,7 @@ lrgex-compress --help                # show usage
 
 ## License
 
-MIT License. See [LICENSE](LICENSE).
+MIT License for LRGEX-authored code. See [LICENSE](LICENSE).
+
+UI built with [Slint](https://slint.dev) (Slint Royalty-free License).
+Third-party crates under their respective licenses (MIT / Apache-2.0 / BSD-3).
