@@ -408,9 +408,12 @@ pub fn compress_folder(
                     }
                 }
             };
-
-            if let Err(_) = res {
-                skipped.push(e.path.to_string_lossy().to_string());
+            if let Err(err) = &res {
+                if err.kind() == std::io::ErrorKind::Interrupted {
+                    cancelled = true;
+                } else {
+                    skipped.push(e.path.to_string_lossy().to_string());
+                }
             }
         }
         if cancelled {
@@ -631,8 +634,12 @@ pub fn compress_paths(
                     }
                 }
             };
-            if let Err(_) = res {
-                skipped.push(e.path.to_string_lossy().to_string());
+            if let Err(err) = &res {
+                if err.kind() == std::io::ErrorKind::Interrupted {
+                    cancelled = true;
+                } else {
+                    skipped.push(e.path.to_string_lossy().to_string());
+                }
             }
         }
         if cancelled {
