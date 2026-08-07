@@ -84,7 +84,7 @@ Extracts ZIP, RAR, and ZGX archives. You don't need WinRAR or 7-Zip installed.
 
 ## Installation
 
-1. Download `LRGEX-Compress-v1.3-setup.exe` from [Releases](https://github.com/LRGEX/Compress/releases)
+1. Download `LRGEX-Compress-v1.4.1-setup.exe` from [Releases](https://github.com/LRGEX/Compress/releases)
 2. Double-click — installs with no admin prompt
 3. Right-click any file or folder → **LRGEX → Compress**
 
