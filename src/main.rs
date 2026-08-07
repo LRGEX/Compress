@@ -10,6 +10,7 @@
 
 mod compress;
 mod extract;
+mod metaattr;
 mod multiselect;
 mod progress;
 mod update;

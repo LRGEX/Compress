@@ -11,7 +11,7 @@
   </ul>
 </div>
 
-**Version 1.3.0**
+**Version 1.4.0**
 
 Free, open source, MIT licensed.
 
@@ -19,24 +19,14 @@ Free, open source, MIT licensed.
 
 ---
 
-## In our benchmark, LRGEX Compress finished extracting 145,000 files while WinRAR was still at 29% on the same machine.
+## Extremely fast. No waiting.
 
-LRGEX Compress uses **Zstandard (zstd)** — a modern compression algorithm optimized for speed. WinRAR and 7-Zip use traditional algorithms (RAR, LZMA2) that are optimized for maximum compression ratio but take significantly longer.
+LRGEX Compress is built around **Zstandard (zstd)** — a modern compression algorithm
+optimized for speed. It uses all your CPU cores automatically, so big folders finish
+in seconds instead of minutes.
 
-For everyday backups and file sharing, many users prefer finishing in seconds instead of waiting several minutes for a slightly smaller archive.
-
-### Benchmark
-
-| | LRGEX Compress | WinRAR | 7-Zip |
-|---|---|---|---|
-| **Algorithm** | zstd (modern) | RAR | LZMA2 |
-| **Extraction** | 42 s | 4 m 51 s | 6 m 11 s |
-| **Archive size** | 3.21 GB | 2.95 GB | 2.90 GB |
-| **Cores used** | All (automatic) | All | All |
-| **Price** | Free (MIT) | Free trial | Free |
-| **Settings** | None — optimized defaults | Many | Many |
-
-LRGEX Compress trades a slightly larger archive for dramatically faster speed.
+For everyday backups and file sharing, seconds matter more than a slightly smaller
+archive.
 
 ---
 
@@ -81,6 +71,10 @@ Extracts ZIP, RAR, and ZGX archives. You don't need WinRAR or 7-Zip installed.
   broken half-written archive. The file only appears when it's 100% complete.
 - **Empty folders preserved.** Some archivers drop empty directories silently.
   LRGEX Compress keeps your exact folder structure.
+- **Metadata preserved exactly.** File contents, modification/creation timestamps
+  (whole-second precision), Windows attributes (hidden, read-only, system), and
+  symbolic links all round-trip identically. NTFS alternate data streams are not
+  supported (rarely used; not planned).
 - **Cancel is clean.** Click Cancel, the partial archive is deleted. No orphaned files.
 - **Signed auto-updates.** Every update is cryptographically verified using Ed25519
   before installation.
