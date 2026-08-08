@@ -415,7 +415,8 @@ fn extract_zgx(archive: &Path, dest: &Path) -> (bool, String) {
     let result = extract_zgx_inner(&mut tar, dest);
 
     match result {
-        ZgxOutcome::Done => {
+        ZgxOutcome::Done(skipped) => {
+            if skipped > 0 { prog.set_skipped(skipped); }
             prog.finish(3);
             let _ = heartbeat.join();
             (true, String::new())
@@ -435,7 +436,7 @@ fn extract_zgx(archive: &Path, dest: &Path) -> (bool, String) {
 }
 
 enum ZgxOutcome {
-    Done,
+    Done(usize), // carries the count of skipped symlinks (0 = perfect extract)
     ElevatedRelaunched, // re-launched as admin; current process must exit
     Failed(String),
 }
@@ -490,6 +491,9 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path) -
     // Some(false) = user said no → all remaining links skip silently.
     let mut elevation_decision: Option<bool> = None;
     let mut needs_relaunch = false;
+    // Count symlinks that couldn't be recreated (elevation denied/declined) so we can
+    // surface 'Done - N skipped' to the user instead of silently dropping links.
+    let mut skipped_links: usize = 0;
 
     let mut entries = match tar.entries() {
         Ok(e) => e,
@@ -588,10 +592,10 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path) -
                         let _ = std::fs::remove_file(&tmp);
                         return Some((path.clone(), e));
                     }
-                    // Apply attributes to the FINAL path post-rename.
-                    if meta.attrs & crate::metaattr::PRESERVED_ATTRS != 0 {
-                        crate::metaattr::apply_attrs_normalized(path, meta.attrs);
-                    }
+                    // Apply attributes to the FINAL path post-rename. ALWAYS normalize
+                    // (not just when nonzero) — a fresh temp has the Archive bit set by
+                    // NTFS, and we must clear it when the source didn't have it.
+                    crate::metaattr::apply_attrs_normalized(path, meta.attrs);
                     guard.disarm(); // rename succeeded — temp no longer exists
                     None
                 })
@@ -749,11 +753,12 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path) -
                             let yes = allow == rfd::MessageDialogResult::Yes;
                             elevation_decision = Some(yes);
                             if yes { needs_relaunch = true; }
+                            if !yes { skipped_links += 1; }
                             // Either way skip THIS link: if yes, the elevated pass recreates
                             // everything; if no, all remaining links skip silently.
                             continue;
                         }
-                        Some(_) => continue, // already decided → skip silently
+                        Some(_) => { skipped_links += 1; continue; } // already decided → skip silently
                     }
                 }
                 crate::metaattr::SymlinkResult::Skipped(_) => {
@@ -853,9 +858,8 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path) -
                 return ZgxOutcome::Failed(format!("rename {}: {}", rel.display(), e));
             }
             // Apply attributes to the FINAL path now that it exists (post-rename).
-            if meta.attrs & crate::metaattr::PRESERVED_ATTRS != 0 {
-                crate::metaattr::apply_attrs_normalized(&outpath, meta.attrs);
-            }
+            // ALWAYS normalize — clear stray Archive bit when source didn't have it.
+            crate::metaattr::apply_attrs_normalized(&outpath, meta.attrs);
             guard.disarm(); // rename succeeded — temp no longer exists to clean up
             continue;
         }
@@ -908,7 +912,7 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path) -
         // with the caveat that links were skipped.
     }
 
-    ZgxOutcome::Done
+    ZgxOutcome::Done(skipped_links)
 }
 
 /// Convert a zip crate DateTime (DOS datetime: year/month/day + hour/min/sec) to
@@ -968,7 +972,9 @@ fn extract_zip(archive: &Path, dest: &Path) -> (bool, String) {
         // Symlink elevation: same one-prompt model as zgx. Latched.
         let mut elevation_decision: Option<bool> = None;
         let mut needs_relaunch = false;
-
+        // Count symlinks silently lost (elevation declined). Does NOT count stub-written
+        // links (those aren't lost). Surfaced via set_skipped before Ok(()).
+        let mut skipped_links: usize = 0;
         for i in 0..za.len() {
             let mut entry = za.by_index(i).map_err(|e| format!("entry {}: {}", i, e))?;
             // zip-slip guard: enclosed_name() returns a sanitized path or None for unsafe
@@ -1012,8 +1018,9 @@ fn extract_zip(archive: &Path, dest: &Path) -> (bool, String) {
                                 .show();
                             elevation_decision = Some(allow == rfd::MessageDialogResult::Yes);
                             if allow == rfd::MessageDialogResult::Yes { needs_relaunch = true; }
+                            else { skipped_links += 1; }
                         }
-                        Some(_) => {} // already decided → skip silently
+                        Some(_) => { skipped_links += 1; } // already decided → skip silently
                     },
                     crate::metaattr::SymlinkResult::Skipped(_) => {
                         if !needs_relaunch {
@@ -1093,6 +1100,8 @@ fn extract_zip(archive: &Path, dest: &Path) -> (bool, String) {
             // UAC denied — fall through to Ok(()) so the GUI shows success with the
             // caveat that symlinks were skipped (regular files are all extracted).
         }
+        // Surface skipped-links count BEFORE finish so the GUI shows 'Done - N skipped'.
+        if skipped_links > 0 { prog.set_skipped(skipped_links); }
         Ok(())
     })();
 
@@ -1259,13 +1268,25 @@ fn extract_rar(archive: &Path, dest: &Path) -> (bool, String) {
         }
 
         // Full success: move staging contents into dest, overwriting where needed.
-        // On any move failure, the staging dir is left for manual inspection (deleting
-        // it would lose work; the user's originals are already partially overwritten
-        // by successful moves at this point, so we can't cleanly roll back).
-        move_dir_contents(&staging, dest).map_err(|e| format!("move from staging: {}", e))?;
-        staging_guard.disarm(); // moves succeeded — staging dir is now empty
-        let _ = std::fs::remove_dir_all(&staging);
-        Ok(())
+        // On move failure, DO NOT let the StagingDir Drop delete staging — it holds the
+        // only copy of files that haven't been moved yet. Forget the guard so Drop's
+        // remove_dir_all doesn't fire, write a recovery README, and surface a loud error.
+        match move_dir_contents(&staging, dest) {
+            Ok(()) => {
+                staging_guard.disarm(); // moves succeeded — staging dir is now empty
+                let _ = std::fs::remove_dir_all(&staging);
+                Ok(())
+            }
+            Err(e) => {
+                // Prevent the StagingDir Drop from deleting the recovery files.
+                std::mem::forget(staging_guard);
+                let _ = std::fs::write(staging.join("RECOVERY-README.txt"),
+                    "LRGEX Compress could not move some files into the destination.\r\n\
+                     Files already moved are in the destination; files still in this\r\n\
+                     folder could not be moved. Copy them manually if needed.\r\n");
+                Err(format!("move from staging failed ({}): unmoved files preserved at {}", e, staging.display()))
+            }
+        }
     })();
 
     sampler_stop.store(true, std::sync::atomic::Ordering::Relaxed);

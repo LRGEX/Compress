@@ -292,7 +292,10 @@ fn main() {
         // WinRAR-style overwrite check: scan the archive for entries that would
         // overwrite existing files in the destination. If ANY conflict, prompt.
         // Works for normal extract AND extract-here (both check archive contents).
-        if extract::has_conflicts(&archive, &dest) {
+        // SKIP on elevated rerun — the non-elevated pass already wrote regular files
+        // (so they 'exist' now) and the user already approved. The rerun only recreates
+        // symlinks; prompting again would confuse the user and risk 'No' → silent loss.
+        if !elevated_rerun && extract::has_conflicts(&archive, &dest) {
             let dest_name = if extract_here {
                 dest.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
             } else {

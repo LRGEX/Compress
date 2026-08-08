@@ -251,15 +251,30 @@ pub fn collect_paths(own: PathBuf) -> Vec<PathBuf> {
     }
 
     // We're a forwarder (mutex held by another live coordinator). Read its pid:ctime.
-    let (coord_pid, coord_ctime) = std::fs::read_to_string(&pid_lock)
-        .ok()
-        .and_then(|s| {
-            let mut parts = s.trim().splitn(2, ':');
-            let pid = parts.next().and_then(|p| p.parse::<u32>().ok())?;
-            let ctime = parts.next().and_then(|c| c.parse::<u64>().ok()).unwrap_or(0);
-            Some((pid, ctime))
-        })
-        .unwrap_or((0, 0));
+    // RETRY briefly: the coordinator may have just acquired the mutex and not yet
+    // finished writing/flushing the lockfile. Reading in that window yields empty /
+    // partial → coord_pid=0 → silent drop of this forwarder's file. A short retry loop
+    // covers the write-visibility gap.
+    let mut coord_pid: u32 = 0;
+    let mut coord_ctime: u64 = 0;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(200);
+    while std::time::Instant::now() < deadline {
+        if let Some((p, c)) = std::fs::read_to_string(&pid_lock)
+            .ok()
+            .and_then(|s| {
+                let mut parts = s.trim().splitn(2, ':');
+                let pid = parts.next().and_then(|p| p.parse::<u32>().ok())?;
+                if pid == 0 { return None; }
+                let ctime = parts.next().and_then(|c| c.parse::<u64>().ok()).unwrap_or(0);
+                Some((pid, ctime))
+            })
+        {
+            coord_pid = p;
+            coord_ctime = c;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
 
     // LIVENESS CHECK: if the coordinator PID is dead (or its creation time doesn't
     // match — defeats PID reuse), the lockfile is STALE. Forwarding into it would
