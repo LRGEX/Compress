@@ -446,7 +446,7 @@ pub fn compress_folder(
     // over one locked file (WinRAR-style). The skip count is surfaced to the GUI.
     progress.set_skipped(skipped.len());
     let success = if ok {
-        std::fs::rename(&part, dest).is_ok()
+        crate::metaattr::atomic_replace(&part, dest).is_ok()
     } else {
         let _ = std::fs::remove_file(&part);
         false
@@ -667,7 +667,7 @@ pub fn compress_paths(
     }
     progress.set_skipped(skipped.len());
     let success = if ok {
-        std::fs::rename(&part, dest).is_ok()
+        crate::metaattr::atomic_replace(&part, dest).is_ok()
     } else {
         let _ = std::fs::remove_file(&part);
         false
