@@ -118,17 +118,10 @@ pub fn check_version_only() -> Option<UpdateInfo> {
         return None;
     }
 
-    // Fix 1: If installed under %ProgramFiles%, do NOT self-update.
-    // Running the installer from %TEMP% elevated is a privilege-escalation vector.
-    // Instead, tell the user to use their package manager.
-    // Throttled: show at most once per day OR once per remote version.
-    if is_machine_wide_install() {
-        if should_show_machine_wide_notice(&manifest.version) {
-            show_machine_wide_update_notice(&manifest.version);
-            mark_notice_shown(&manifest.version);
-        }
-        return None;
-    }
+    // Auto-update works for ALL install types (per-user AND machine-wide/Program Files).
+    // For Program Files installs, apply_update() launches the installer elevated (UAC
+    // prompt) so it can overwrite the machine-wide copy. The installer is Ed25519-
+    // verified before launch, which is what makes the %TEMP% elevation safe.
 
     Some(UpdateInfo {
         version: manifest.version,
@@ -234,10 +227,32 @@ pub fn apply_update(info: UpdateInfo) {
         .show();
 
     use std::os::windows::process::CommandExt;
-    let _ = std::process::Command::new("cmd.exe")
-        .args(["/c", bat_path.to_str().unwrap_or("")])
-        .creation_flags(0x08000000u32)
-        .spawn();
+
+    // Machine-wide (Program Files) installs need elevation to overwrite files there.
+    // We launch the installer via ShellExecuteW "runas" (UAC prompt) for those.
+    // Per-user installs run normally (no UAC). Both use the same Ed25519-verified
+    // installer — the verification is what makes the %TEMP% elevation safe.
+    if is_machine_wide_install() {
+        use windows_sys::Win32::UI::Shell::ShellExecuteW;
+        use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
+        let verb: Vec<u16> = "runas\0".encode_utf16().collect();
+        let file: Vec<u16> = (bat_path.to_string_lossy().to_string() + "\0").encode_utf16().collect();
+        let _ = unsafe {
+            ShellExecuteW(
+                std::ptr::null_mut(),
+                verb.as_ptr(),
+                file.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                SW_HIDE,
+            )
+        };
+    } else {
+        let _ = std::process::Command::new("cmd.exe")
+            .args(["/c", bat_path.to_str().unwrap_or("")])
+            .creation_flags(0x08000000u32)
+            .spawn();
+    }
 
     // Exit immediately — installer will close this app via CloseApplications=force.
     std::process::exit(0);
@@ -315,54 +330,6 @@ fn is_machine_wide_install() -> bool {
 }
 
 /// Tell the user to update via their package manager (non-blocking dialog).
-fn show_machine_wide_update_notice(version: &str) {
-    rfd::MessageDialog::new()
-        .set_title("Update Available")
-        .set_description(&format!(
-            "Version {} is available.\n\nThis app was installed machine-wide. Please update using your package manager:\n• Chocolatey: choco upgrade lrgex-compress\n• Winget: winget upgrade LRGEX.Compress",
-            version
-        ))
-        .set_buttons(rfd::MessageButtons::Ok)
-        .show();
-}
-
-/// Throttle the machine-wide update notice: show at most once per day per version.
-/// Uses a marker file under %LOCALAPPDATA%\LRGEX Compress\update-notice.txt.
-/// Contains the version + the day (YYYY-MM-DD). If both match, suppress.
-fn should_show_machine_wide_notice(version: &str) -> bool {
-    let marker = update_notice_marker_path();
-    if let Ok(content) = std::fs::read_to_string(&marker) {
-        let today = today_string();
-        // Format: "<version>\n<date>"
-        if content.trim() == format!("{}\n{}", version, today) {
-            return false; // Already shown today for this version
-        }
-    }
-    true
-}
-
-fn mark_notice_shown(version: &str) {
-    let marker = update_notice_marker_path();
-    let today = today_string();
-    let _ = std::fs::write(&marker, format!("{}\n{}", version, today));
-}
-
-fn update_notice_marker_path() -> std::path::PathBuf {
-    std::env::var("LOCALAPPDATA")
-        .map(|d| std::path::PathBuf::from(d).join("LRGEX Compress").join("update-notice.txt"))
-        .unwrap_or_else(|_| std::env::temp_dir().join("lrgex-update-notice.txt"))
-}
-
-fn today_string() -> String {
-    // Use SystemTime → seconds → approximate day. We don't need chrono for this.
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let day = secs / 86400; // days since epoch
-    format!("d{}", day)
-}
-
 fn is_newer(remote: &str, current: &str) -> bool {
     let parse = |s: &str| -> Vec<u32> {
         s.split('.').filter_map(|n| n.parse().ok()).collect()
