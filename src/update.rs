@@ -50,6 +50,9 @@ pub struct UpdateInfo {
 /// Returns `Some(UpdateInfo)` if a newer version exists, else `None`.
 /// On network error, logs the failure to a local file (Finding #3: update-channel
 /// observability) and returns None — never blocks or prompts.
+///
+/// If the app is installed under %ProgramFiles% (machine-wide/choco/winget),
+/// self-update is BLOCKED for safety. The user is told to use choco/winget instead.
 pub fn check_version_only() -> Option<UpdateInfo> {
     let current = env!("CARGO_PKG_VERSION");
 
@@ -112,6 +115,18 @@ pub fn check_version_only() -> Option<UpdateInfo> {
     };
 
     if !is_newer(&manifest.version, current) {
+        return None;
+    }
+
+    // Fix 1: If installed under %ProgramFiles%, do NOT self-update.
+    // Running the installer from %TEMP% elevated is a privilege-escalation vector.
+    // Instead, tell the user to use their package manager.
+    // Throttled: show at most once per day OR once per remote version.
+    if is_machine_wide_install() {
+        if should_show_machine_wide_notice(&manifest.version) {
+            show_machine_wide_update_notice(&manifest.version);
+            mark_notice_shown(&manifest.version);
+        }
         return None;
     }
 
@@ -268,6 +283,84 @@ fn log_update_issue(reason: &str) {
             let _ = writeln!(f, "[{}] {}", timestamp, reason);
         }
     }
+}
+
+/// Detect if the running exe is installed under %ProgramFiles% (machine-wide).
+/// Case-insensitive path comparison — Windows paths are case-insensitive.
+/// Checks both %ProgramFiles% (64-bit) and %ProgramFiles(x86)% (32-bit).
+fn is_machine_wide_install() -> bool {
+    let exe = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(_) => return false,
+    };
+    let exe_lower = exe.to_string_lossy().to_ascii_lowercase();
+
+    // Check %ProgramFiles% (typically C:\Program Files)
+    if let Ok(pf) = std::env::var("ProgramFiles") {
+        let pf_lower = pf.to_ascii_lowercase();
+        if exe_lower.starts_with(&pf_lower) {
+            return true;
+        }
+    }
+
+    // Check %ProgramFiles(x86)% (typically C:\Program Files (x86))
+    if let Ok(pf86) = std::env::var("ProgramFiles(x86)") {
+        let pf86_lower = pf86.to_ascii_lowercase();
+        if exe_lower.starts_with(&pf86_lower) {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Tell the user to update via their package manager (non-blocking dialog).
+fn show_machine_wide_update_notice(version: &str) {
+    rfd::MessageDialog::new()
+        .set_title("Update Available")
+        .set_description(&format!(
+            "Version {} is available.\n\nThis app was installed machine-wide. Please update using your package manager:\n• Chocolatey: choco upgrade lrgex-compress\n• Winget: winget upgrade LRGEX.Compress",
+            version
+        ))
+        .set_buttons(rfd::MessageButtons::Ok)
+        .show();
+}
+
+/// Throttle the machine-wide update notice: show at most once per day per version.
+/// Uses a marker file under %LOCALAPPDATA%\LRGEX Compress\update-notice.txt.
+/// Contains the version + the day (YYYY-MM-DD). If both match, suppress.
+fn should_show_machine_wide_notice(version: &str) -> bool {
+    let marker = update_notice_marker_path();
+    if let Ok(content) = std::fs::read_to_string(&marker) {
+        let today = today_string();
+        // Format: "<version>\n<date>"
+        if content.trim() == format!("{}\n{}", version, today) {
+            return false; // Already shown today for this version
+        }
+    }
+    true
+}
+
+fn mark_notice_shown(version: &str) {
+    let marker = update_notice_marker_path();
+    let today = today_string();
+    let _ = std::fs::write(&marker, format!("{}\n{}", version, today));
+}
+
+fn update_notice_marker_path() -> std::path::PathBuf {
+    std::env::var("LOCALAPPDATA")
+        .map(|d| std::path::PathBuf::from(d).join("LRGEX Compress").join("update-notice.txt"))
+        .unwrap_or_else(|_| std::env::temp_dir().join("lrgex-update-notice.txt"))
+}
+
+fn today_string() -> String {
+    // Use SystemTime → seconds → approximate day. We don't need chrono for this.
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let day = secs / 86400; // days since epoch
+    format!("d{}", day)
 }
 
 fn is_newer(remote: &str, current: &str) -> bool {
