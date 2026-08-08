@@ -118,6 +118,16 @@ pub fn check_version_only() -> Option<UpdateInfo> {
         return None;
     }
 
+    // Reject manifests with a missing/empty per-asset signature EARLY — before we
+    // prompt the user and download 17 MB. Saves bandwidth + avoids confusing UX.
+    match &manifest.platforms.windows.signature {
+        Some(s) if !s.is_empty() => {}
+        _ => {
+            log_update_issue("manifest has no per-asset signature; skipping update");
+            return None;
+        }
+    }
+
     // Auto-update works for ALL install types (per-user AND machine-wide/Program Files).
     // For Program Files installs, apply_update() launches the installer elevated (UAC
     // prompt) so it can overwrite the machine-wide copy. The installer is Ed25519-
@@ -147,7 +157,7 @@ pub fn apply_update(info: UpdateInfo) {
         return;
     }
 
-    let temp_installer = std::env::temp_dir().join("lrgex-compress-update-setup.exe");
+    let temp_installer = std::env::temp_dir().join(format!("lrgex-compress-update-setup-{}.exe", std::process::id()));
 
     let resp = match ureq::get(&format!("{}?v={}", info.url, info.version))
         .timeout(std::time::Duration::from_secs(120))
@@ -202,20 +212,52 @@ pub fn apply_update(info: UpdateInfo) {
         return;
     }
 
-    if let Err(e) = std::fs::write(&temp_installer, &data) {
-        show_error(&format!("Save failed: {}", e));
+    // SECURITY: Write the verified bytes to disk via a handle that denies WRITE and
+    // DELETE sharing (FILE_SHARE_READ only). We keep this handle open across the
+    // launch so no process can swap/modify/delete the file between verification and
+    // execution (TOCTOU). %TEMP% is user-writable, so without this lock, malware
+    // running as the same user could replace the installer after we verify it but
+    // before it runs elevated — a local privilege escalation on Program Files installs.
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_GENERIC_WRITE, FILE_SHARE_READ, CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+    };
+    use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
+    let path_wide: Vec<u16> = (temp_installer.to_string_lossy().to_string() + "\0").encode_utf16().collect();
+    let lock_handle: HANDLE = unsafe {
+        CreateFileW(
+            path_wide.as_ptr(),
+            FILE_GENERIC_WRITE,
+            FILE_SHARE_READ,  // deny write + delete sharing — no one can swap it
+            std::ptr::null(),
+            CREATE_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL,
+            std::ptr::null_mut(),
+        )
+    };
+    if lock_handle == INVALID_HANDLE_VALUE {
+        show_error("Failed to stage installer (CreateFileW). Update aborted.");
         return;
     }
+    // Write the verified bytes through the locked handle.
+    {
+        use std::os::windows::io::FromRawHandle;
+        let mut f = unsafe { std::fs::File::from_raw_handle(lock_handle as *mut _) };
+        use std::io::Write;
+        if let Err(e) = f.write_all(&data) {
+            show_error(&format!("Save failed: {}", e));
+            return;
+        }
+        let _ = f.flush();
+        // Leak the raw handle back out — we keep it open until after launch.
+        std::mem::forget(f);
+    }
 
-    // Spawn a .bat that waits for the installer to finish, then shows success/failure.
-    let bat_path = std::env::temp_dir().join("lrgex-compress-updater.bat");
-    let bat = format!(
-        "@echo off\r\n\"{}\" /VERYSILENT /NORESTART /NOCANCEL /SP-\r\nif %errorlevel% equ 0 (\r\n  msg * \"LRGEX Compress updated successfully to v{}\"\r\n) else (\r\n  msg * \"Update failed (installer exit code %errorlevel%)\"\r\n)\r\ndel \"{}\" >nul 2>&1\r\ndel \"%~f0\"\r\n",
-        temp_installer.to_string_lossy(),
-        info.version,
-        temp_installer.to_string_lossy()
-    );
-    let _ = std::fs::write(&bat_path, bat);
+    // SECURITY: launch the installer DIRECTLY — no .bat wrapper. A .bat in %TEMP%
+    // is trivially rewritable by any same-user process, reopening the swap vector.
+    // Launching the locked installer exe directly means the verified bytes are the
+    // bytes that execute. The lock handle stays open until process exit.
+    let silent_args = "/VERYSILENT /NORESTART /NOCANCEL /SP-";
 
     rfd::MessageDialog::new()
         .set_title("Updating")
@@ -230,31 +272,53 @@ pub fn apply_update(info: UpdateInfo) {
 
     // Machine-wide (Program Files) installs need elevation to overwrite files there.
     // We launch the installer via ShellExecuteW "runas" (UAC prompt) for those.
-    // Per-user installs run normally (no UAC). Both use the same Ed25519-verified
-    // installer — the verification is what makes the %TEMP% elevation safe.
+    // Per-user installs run normally (no UAC). Both launch the SAME locked, verified
+    // installer — the write-lock + Ed25519 verification is what makes %TEMP% elevation safe.
     if is_machine_wide_install() {
         use windows_sys::Win32::UI::Shell::ShellExecuteW;
         use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
         let verb: Vec<u16> = "runas\0".encode_utf16().collect();
-        let file: Vec<u16> = (bat_path.to_string_lossy().to_string() + "\0").encode_utf16().collect();
-        let _ = unsafe {
+        let file: Vec<u16> = (temp_installer.to_string_lossy().to_string() + "\0").encode_utf16().collect();
+        let params: Vec<u16> = (silent_args.to_string() + "\0").encode_utf16().collect();
+        let hinst = unsafe {
             ShellExecuteW(
                 std::ptr::null_mut(),
                 verb.as_ptr(),
                 file.as_ptr(),
-                std::ptr::null(),
+                params.as_ptr(),
                 std::ptr::null(),
                 SW_HIDE,
             )
         };
+        // ShellExecuteW returns HINSTANCE <= 32 on error (e.g. ERROR_CANCELLED if UAC
+        // denied). If launch failed, clean up the staged installer so we don't leave a
+        // locked orphan in %TEMP%, and tell the user.
+        if (hinst as usize) <= 32 {
+            let _ = std::fs::remove_file(&temp_installer);
+            show_error("Update was cancelled or failed to launch. No changes were made.");
+            return;
+        }
     } else {
-        let _ = std::process::Command::new("cmd.exe")
-            .args(["/c", bat_path.to_str().unwrap_or("")])
+        match std::process::Command::new(&temp_installer)
+            .args(silent_args.split_whitespace())
             .creation_flags(0x08000000u32)
-            .spawn();
+            .spawn()
+        {
+            Ok(_) => {}
+            Err(e) => {
+                let _ = std::fs::remove_file(&temp_installer);
+                show_error(&format!("Failed to launch installer: {}", e));
+                return;
+            }
+        }
     }
 
     // Exit immediately — installer will close this app via CloseApplications=force.
+    // The lock_handle closes when the process exits. Give the installer a moment to
+    // open its own handle on the staged exe before we release our write-lock — without
+    // this sleep, a slow-starting installer (UAC/AV) can see the lock vanish before it
+    // opens the file, reopening the %TEMP% swap window the lock was meant to close.
+    std::thread::sleep(std::time::Duration::from_millis(500));
     std::process::exit(0);
 }
 
@@ -262,10 +326,16 @@ fn verify_signature(data: &[u8], sig_hex: &str) -> Result<(), String> {
     let pub_hex = UPDATE_PUBKEY_HEX.trim();
     let pub_bytes = hex::decode(pub_hex).map_err(|e| format!("Bad public key: {}", e))?;
     let mut pub_arr = [0u8; 32];
+    if pub_bytes.len() != 32 {
+        return Err(format!("Bad public key length: expected 32, got {}", pub_bytes.len()));
+    }
     pub_arr.copy_from_slice(&pub_bytes);
     let verifying_key = VerifyingKey::from_bytes(&pub_arr).map_err(|e| format!("Bad public key: {}", e))?;
 
     let sig_bytes = hex::decode(sig_hex).map_err(|e| format!("Bad signature format: {}", e))?;
+    if sig_bytes.len() != 64 {
+        return Err(format!("Bad signature length: expected 64, got {}", sig_bytes.len()));
+    }
     let mut sig_arr = [0u8; 64];
     sig_arr.copy_from_slice(&sig_bytes);
     let signature = Signature::from_bytes(&sig_arr);

@@ -253,7 +253,15 @@ fn confirm_extract_overwrite(dest_name: &str) -> bool {
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
+    let args_raw: Vec<String> = std::env::args().collect();
+    // Detect and strip the internal `--elevated-rerun` sentinel (set by symlink-elevation
+    // relaunch). When present, extract skips regular files that already exist and only
+    // recreates symlinks. Strip it so it doesn't pollute positional arg parsing.
+    let elevated_rerun = args_raw.iter().any(|a| a == "--elevated-rerun");
+    if elevated_rerun {
+        crate::extract::ELEVATED_RERUN.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    let args: Vec<String> = args_raw.into_iter().filter(|a| a != "--elevated-rerun").collect();
     let is_extract = args.len() >= 3 && args[1] == "-x";
 
     // --- EXTRACT path (no multi-select) ---

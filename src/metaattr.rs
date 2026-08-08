@@ -25,7 +25,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use windows_sys::Win32::Foundation::{FILETIME, HANDLE, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, SetFileAttributesW, SetFileTime, FILE_FLAG_BACKUP_SEMANTICS,
+    CreateFileW, GetFileAttributesW, SetFileAttributesW, SetFileTime, FILE_FLAG_BACKUP_SEMANTICS,
     FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
 };
 
@@ -162,6 +162,9 @@ fn secs_to_filetime(secs: u64) -> FILETIME {
 }
 
 /// Apply Windows attributes to a path. Masked to PRESERVED_ATTRS. Best-effort.
+/// NOTE: this only SETS bits when nonzero; it does NOT clear the Archive bit when the
+/// source didn't have it. For full fidelity (clear stray bits from a fresh temp file),
+/// use `apply_attrs_normalized` instead.
 pub fn apply_attrs(path: &Path, preserved: u32) {
     if preserved == 0 {
         return;
@@ -172,6 +175,31 @@ pub fn apply_attrs(path: &Path, preserved: u32) {
     };
     unsafe {
         let _ = SetFileAttributesW(wide.as_ptr(), preserved as FILE_FLAGS_AND_ATTRIBUTES);
+    }
+}
+
+/// Normalize the PRESERVED attribute bits on a path to exactly match the source.
+/// Read-modify-write: read current attrs, clear the preserved subset, OR-in the
+/// source's preserved subset, write back. This clears stray bits (e.g. the Archive
+/// bit NTFS sets on a freshly-created temp file) when the source didn't have them,
+/// while preserving bits we don't own (DIRECTORY, REPARSE_POINT, etc.).
+pub fn apply_attrs_normalized(path: &Path, source_preserved: u32) {
+    let wide = match path_to_wide(path) {
+        Some(w) => w,
+        None => return,
+    };
+    unsafe {
+        // GetFileAttributesW returns the attrs as u32, or INVALID_FILE_ATTRIBUTES
+        // (0xFFFFFFFF) on failure. It takes ONLY the path pointer — no out-param.
+        let current = GetFileAttributesW(wide.as_ptr());
+        if current == 0xFFFFFFFF {
+            // Couldn't read — fall back to a plain set of the source bits.
+            let _ = SetFileAttributesW(wide.as_ptr(), (source_preserved & PRESERVED_ATTRS) as FILE_FLAGS_AND_ATTRIBUTES);
+            return;
+        }
+        // Clear the preserved subset, OR-in the source's preserved subset.
+        let desired = (current & !PRESERVED_ATTRS) | (source_preserved & PRESERVED_ATTRS);
+        let _ = SetFileAttributesW(wide.as_ptr(), desired as FILE_FLAGS_AND_ATTRIBUTES);
     }
 }
 
@@ -276,6 +304,14 @@ pub fn relaunch_elevated(args: &[String]) -> bool {
         .join(" ");
     let params_wide = wide_from_str(&params).unwrap_or_default();
 
+    // Pass the current working directory as lpDirectory. Elevated processes launched
+    // via "runas" often start in System32, not the caller's CWD — any relative path
+    // in args would silently resolve against System32 and fail.
+    let cwd_wide = std::env::current_dir()
+        .ok()
+        .and_then(|c| path_to_wide(&c));
+    let cwd_ptr = cwd_wide.as_ref().map(|w| w.as_ptr()).unwrap_or(std::ptr::null());
+
     let hinst = unsafe {
         ShellExecuteW(
             std::ptr::null_mut(), // hwnd = NULL (HWND is *mut c_void)
@@ -286,7 +322,7 @@ pub fn relaunch_elevated(args: &[String]) -> bool {
             } else {
                 params_wide.as_ptr()
             },
-            std::ptr::null(),
+            cwd_ptr,
             SW_SHOWNORMAL,
         )
     };

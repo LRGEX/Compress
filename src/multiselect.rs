@@ -52,24 +52,57 @@ fn roster_path() -> PathBuf {
     std::env::temp_dir().join(format!("lrgex-compress-session-{}.txt", std::process::id()))
 }
 
-/// Is the given PID a currently-running process? Used to detect a STALE coordinator.pid
-/// lockfile (left behind by a finished/crashed previous run) so a forwarder doesn't
-/// forward into the void and exit with no archive produced.
-fn is_process_alive(pid: u32) -> bool {
+/// Is the given PID a currently-running process AND did it start when the lockfile
+/// says it did? Checking PID-alive alone is NOT enough — Windows reuses PIDs, so a
+/// dead coordinator's PID can be reassigned to an unrelated process, making a stale
+/// lockfile look live. By also checking the process creation time (passed in from the
+/// lockfile as `pid:ctime`), we defeat PID reuse: the unrelated process has a
+/// different creation time.
+fn is_process_alive_with_ctime(pid: u32, expected_ctime: u64) -> bool {
+    use windows_sys::Win32::System::Threading::GetProcessTimes;
+    use windows_sys::Win32::Foundation::FILETIME;
     unsafe {
-        // SYNCHRONIZE (0x00100000) lets WaitForSingleObject detect exit; we use
-        // PROCESS_QUERY_LIMITED_INFORMATION + GetExitCodeProcess which works cross-user
-        // and doesn't need full access. Either signal is enough.
         let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
         if h.is_null() {
-            // Can't open it → not ours / doesn't exist → treat as not alive.
+            // Can't open (doesn't exist OR access-denied cross-integrity). We can't
+            // tell the difference safely. Treat as DEAD — a live coordinator we can't
+            // query would hold the MUTEX, and try_acquire_mutex below would fail,
+            // preventing the dual-coordinator race. So clearing the lockfile here is
+            // safe: if the coordinator is alive, the mutex acquire fails and we forward.
             return false;
         }
-        let mut code: u32 = 0;
-        let ok = GetExitCodeProcess(h, &mut code);
+        let mut create: FILETIME = std::mem::zeroed();
+        let mut exit: FILETIME = std::mem::zeroed();
+        let mut kernel: FILETIME = std::mem::zeroed();
+        let mut user: FILETIME = std::mem::zeroed();
+        let ok = GetProcessTimes(h, &mut create, &mut exit, &mut kernel, &mut user);
         let _ = CloseHandle(h);
-        // ok != 0 AND exit code == STILL_ACTIVE (0x103) → alive.
-        ok != 0 && code as u32 == STILL_ACTIVE as u32
+        if ok == 0 {
+            // GetProcessTimes failed (access-denied on a live process at a different
+            // integrity level). CONSERVATIVE: treat as ALIVE so we DON'T clear the
+            // lockfile and race a real coordinator. The cost is one lost forwarder
+            // invocation — far better than two coordinators corrupting each other.
+            return true;
+        }
+        let actual_ctime = ((create.dwHighDateTime as u64) << 32) | (create.dwLowDateTime as u64);
+        actual_ctime == expected_ctime
+    }
+}
+
+/// Read this process's own creation time — used to write into the coordinator lockfile
+/// so forwarders can defeat PID reuse via is_process_alive_with_ctime.
+fn own_creation_time() -> u64 {
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+    use windows_sys::Win32::Foundation::FILETIME;
+    unsafe {
+        let mut create: FILETIME = std::mem::zeroed();
+        let mut exit: FILETIME = std::mem::zeroed();
+        let mut kernel: FILETIME = std::mem::zeroed();
+        let mut user: FILETIME = std::mem::zeroed();
+        if GetProcessTimes(GetCurrentProcess(), &mut create, &mut exit, &mut kernel, &mut user) == 0 {
+            return 0;
+        }
+        ((create.dwHighDateTime as u64) << 32) | (create.dwLowDateTime as u64)
     }
 }
 
@@ -174,6 +207,12 @@ fn collect_as_coordinator(own: PathBuf, pid: u32) -> Vec<PathBuf> {
             continue;
         }
         let p = PathBuf::from(line);
+        // Sanity check: reject lines that don't parse as real filesystem paths (e.g.
+        // injected garbage from a same-user process writing to the roster file).
+        // A valid path must be absolute or contain a normal component.
+        if line.contains('\0') {
+            continue; // embedded NUL — can't be a real path
+        }
         if !seen.contains(&p) {
             seen.push(p);
         }
@@ -197,9 +236,11 @@ pub fn collect_paths(own: PathBuf) -> Vec<PathBuf> {
     let first_acquire = try_acquire_mutex();
     if let Some(handle) = first_acquire {
         let pid = std::process::id();
+        let ctime = own_creation_time();
         // Clear any stale lockfile before claiming the role (another instance may have
         // died without cleaning up). We just acquired the mutex, so we are authoritative.
-        let _ = std::fs::write(&pid_lock, pid.to_string());
+        // Write `pid:ctime` so forwarders can defeat PID reuse via creation-time check.
+        let _ = std::fs::write(&pid_lock, format!("{}:{}", pid, ctime));
         let paths = collect_as_coordinator(own, pid);
         let _ = std::fs::remove_file(&pid_lock);
         unsafe {
@@ -209,24 +250,29 @@ pub fn collect_paths(own: PathBuf) -> Vec<PathBuf> {
         return paths;
     }
 
-    // We're a forwarder (mutex held by another live coordinator). Read its PID.
-    let coord_pid = std::fs::read_to_string(&pid_lock)
+    // We're a forwarder (mutex held by another live coordinator). Read its pid:ctime.
+    let (coord_pid, coord_ctime) = std::fs::read_to_string(&pid_lock)
         .ok()
-        .and_then(|s| s.trim().parse::<u32>().ok())
-        .unwrap_or(0);
+        .and_then(|s| {
+            let mut parts = s.trim().splitn(2, ':');
+            let pid = parts.next().and_then(|p| p.parse::<u32>().ok())?;
+            let ctime = parts.next().and_then(|c| c.parse::<u64>().ok()).unwrap_or(0);
+            Some((pid, ctime))
+        })
+        .unwrap_or((0, 0));
 
-    // LIVENESS CHECK: if the coordinator PID is dead (or missing), the lockfile is
-    // STALE — a previous coordinator finished or crashed without cleaning up. Forwarding
-    // into it would silently lose this invocation. Instead: clear the stale lockfile,
-    // then retry as coordinator. This makes a stale lockfile impossible to deadlock us.
-    let alive = coord_pid != 0 && is_process_alive(coord_pid);
+    // LIVENESS CHECK: if the coordinator PID is dead (or its creation time doesn't
+    // match — defeats PID reuse), the lockfile is STALE. Forwarding into it would
+    // silently lose this invocation. Instead: clear the stale lockfile, retry as coordinator.
+    let alive = coord_pid != 0 && is_process_alive_with_ctime(coord_pid, coord_ctime);
     if coord_pid == 0 || !alive {
         // Clear the stale state and try to become the coordinator.
         let _ = std::fs::remove_file(&pid_lock);
         let second_acquire = try_acquire_mutex();
         if let Some(handle) = second_acquire {
             let pid = std::process::id();
-            let _ = std::fs::write(&pid_lock, pid.to_string());
+            let ctime = own_creation_time();
+            let _ = std::fs::write(&pid_lock, format!("{}:{}", pid, ctime));
             let paths = collect_as_coordinator(own, pid);
             let _ = std::fs::remove_file(&pid_lock);
             unsafe {

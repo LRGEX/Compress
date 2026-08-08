@@ -1,4 +1,15 @@
-# Patch Notes - Version 1.4.4 - Current
+# Patch Notes - Version 1.4.5 - Current
+
+## 🔧 Fixes
+
+- Overwrite confirmation prompts added for both compression and extraction
+- Partial files are now cleaned up if extraction fails or is cancelled
+- Symlink targets inside archives are validated before extraction
+- Auto-update now works for all install types
+
+---
+
+# Patch Notes - Version 1.4.4
 
 ## 🔧 Fixes
 

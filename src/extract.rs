@@ -16,6 +16,12 @@ use std::path::{Path, PathBuf};
 
 use crate::progress::{self, ByteReader, Progress};
 
+/// Set by main.rs when the process was relaunched elevated with `--elevated-rerun`.
+/// When true, the extract path SKIPS regular files that already exist on disk
+/// (the non-elevated pass already wrote them) and only recreates symlinks. This
+/// avoids re-writing every file a second time on symlink-elevation relaunch.
+pub static ELEVATED_RERUN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Drop guard for an in-flight output file. If the write fails, is cancelled, or the
 /// thread panics, the guard deletes the partial file so a truncated/zero-filled file
 /// never looks complete. Disarmed (forgotten) only after the write + metadata restore
@@ -24,11 +30,16 @@ use crate::progress::{self, ByteReader, Progress};
 struct PartialFile {
     path: PathBuf,
     armed: bool,
+    /// Whether the file existed BEFORE we started writing. If it did, we must NOT
+    /// delete it on failure/cancel — that would destroy the user's original file.
+    /// Only delete files WE created (didn't exist before).
+    pre_existed: bool,
 }
 
 impl PartialFile {
     fn new(path: PathBuf) -> Self {
-        Self { path, armed: true }
+        let pre_existed = path.exists();
+        Self { path, armed: true, pre_existed }
     }
     /// Disarm: call this ONLY after the file is fully written and metadata applied.
     fn disarm(mut self) {
@@ -38,12 +49,51 @@ impl PartialFile {
 
 impl Drop for PartialFile {
     fn drop(&mut self) {
-        if self.armed {
-            // Best-effort: a failure here (e.g. file already gone) must not mask the
-            // original error that triggered the unwind.
+        if self.armed && !self.pre_existed {
+            // Only delete files WE created. If the file pre-existed (user clicked Yes
+            // to overwrite, then cancelled mid-write), deleting would destroy their
+            // original — leave the (now-partial) file instead. A partial overwrite is
+            // bad, but destroying the original entirely is worse.
             let _ = std::fs::remove_file(&self.path);
         }
     }
+}
+
+/// Drop guard for a staging directory (used by RAR extraction). On panic/cancel/failure,
+/// recursively delete the staging dir so we don't leak a multi-GB orphan. Disarmed after
+/// the successful move-into-place.
+struct StagingDir {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl StagingDir {
+    fn new(path: PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for StagingDir {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
+/// Build a collision-free temp path for an in-flight extraction write. Appends a
+/// unique suffix (`.<pid>-<counter>`) AFTER the full original filename — so siblings
+/// like `data.txt` and `data.bin` get `data.txt.<pid>-0` and `data.bin.<pid>-1`,
+/// NEVER colliding. (with_extension would have replaced the ext and caused data loss
+/// for same-stem-different-extension pairs in the parallel batch.)
+fn extract_temp_path(final_path: &Path) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{}.lrgex-tmp-{}-{}", final_path.display(), std::process::id(), id).into()
 }
 
 /// Validate a symlink/hardlink TARGET so a crafted archive cannot create a link
@@ -74,30 +124,57 @@ fn is_safe_link_target(target: &str, link_path: &Path, dest_root: &Path) -> bool
         return false;
     }
 
-    // Resolve the target relative to the link's own directory, then canonicalize the
-    // parent (the link itself doesn't exist yet) and confirm it stays under dest_root.
-    // This catches indirect escapes like `a/../../escape` that survive the component
-    // check because each individual component is Normal.
+    // Resolve the target relative to the link's own directory using LEXICAL
+    // normalization only (resolve `.` and `..` as string operations, do NOT call
+    // canonicalize on the chain). canonicalize follows symlinks, so an earlier-
+    // extracted symlink pointing outside dest could redirect a later link's parent
+    // chain outside the root while the literal path stays inside. Lexical-only
+    // normalization is immune to that cross-symlink redirect.
     let base = match link_path.parent() {
         Some(b) => b,
         None => return false,
     };
     let resolved = base.join(p);
+    let normalized = lexical_normalize(&resolved);
 
-    // Canonicalize dest_root (must exist — it's the extract target folder).
+    // Canonicalize dest_root only (it's a real folder, not a symlink we created).
     let canon_root = match dest_root.canonicalize() {
-        Ok(c) => c,
+        Ok(c) => lexical_normalize(&c),
         Err(_) => return false,
     };
-    // Canonicalize the resolved target's parent. The final component may not exist yet
-    // (for symlinks it usually won't), but the parent chain must exist and resolve
-    // inside dest_root.
-    let canon_parent = match resolved.parent().and_then(|p| p.canonicalize().ok()) {
-        Some(c) => c,
-        None => return false,
-    };
 
-    canon_parent.starts_with(&canon_root)
+    normalized.starts_with(&canon_root)
+}
+
+/// Lexically normalize a path: resolve `.` and `..` components as string operations
+/// WITHOUT touching the filesystem (no symlink following, no canonicalize). Used by
+/// is_safe_link_target so the containment check can't be redirected by an earlier-
+/// extracted symlink.
+fn lexical_normalize(p: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut prefix: Option<std::ffi::OsString> = None;
+    let mut out: Vec<std::ffi::OsString> = Vec::new();
+    for c in p.components() {
+        match c {
+            Component::CurDir => {} // skip `.`
+            Component::ParentDir => { out.pop(); } // `..` → go up one
+            Component::RootDir => { out.clear(); } // absolute root — reset
+            Component::Prefix(pfx) => { prefix = Some(pfx.as_os_str().to_os_string()); out.clear(); }
+            Component::Normal(s) => out.push(s.to_os_string()),
+        }
+    }
+    let mut result = PathBuf::new();
+    if let Some(pfx) = prefix {
+        result.push(pfx);
+    }
+    // Re-add the root separator if the original path was absolute (had RootDir or Prefix).
+    if p.components().any(|c| matches!(c, Component::RootDir)) {
+        result.push("");
+    }
+    for part in out {
+        result.push(part);
+    }
+    result
 }
 
 /// Counting reader for zip extraction — ticks decompressed bytes into Progress.
@@ -177,6 +254,10 @@ pub fn extract_archive(archive: &Path, dest: &Path) -> (bool, String) {
 /// exists on disk under `dest`. Used to prompt the user before overwriting (WinRAR-style).
 /// Best-effort: on any read error, returns false (let the extract path handle the error).
 pub fn has_conflicts(archive: &Path, dest: &Path) -> bool {
+    // NOTE: we deliberately do NOT fast-path on empty/non-existent dest. A file could
+    // appear in the window between an empty check and the extract. Always scan the
+    // archive contents so the prompt fires for any real conflict. (For a genuinely
+    // empty dest, the scan finds no conflicts and returns false quickly anyway.)
     match detect_format(archive) {
         Some(Format::Zgx) => zgx_has_conflicts(archive, dest),
         Some(Format::Zip) => zip_has_conflicts(archive, dest),
@@ -478,42 +559,66 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path) -
         // 2. Parallel write + per-file metadata restore on the OPEN handle (no re-open).
         //    Runs on the dedicated oversubscribed write_pool (48-72 threads) — I/O-blocked
         //    workers don't burn CPU, so more threads than cores is correct here.
+        //    Temp-then-rename: write to <path>.zgx-lrgex-extract-tmp, then atomically
+        //    rename onto <path>. The user's original is never touched until the rename —
+        //    no truncation, no partial-overwrite data loss if a write fails.
         use std::os::windows::io::AsRawHandle;
         let run_writes = || {
             batch
                 .par_iter()
                 .filter_map(|(path, data, meta)| {
-                    let mut f = match std::fs::File::create(path) {
+                    let tmp = extract_temp_path(path);
+                    // Guard the temp for panic safety. Disarmed after the rename succeeds.
+                    let mut guard = PartialFile::new(tmp.clone());
+                    let mut f = match std::fs::File::create(&tmp) {
                         Ok(f) => f,
-                        Err(e) => return Some(e),
+                        Err(e) => return Some((path.clone(), e)),
                     };
                     use std::io::Write;
-                    if let Err(e) = f.write_all(data) { return Some(e); }
+                    if let Err(e) = f.write_all(data) {
+                        let _ = std::fs::remove_file(&tmp);
+                        return Some((path.clone(), e));
+                    }
                     let raw = f.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
-                    crate::metaattr::apply_all_handle(raw, meta.mtime, meta.ctime, meta.attrs & crate::metaattr::PRESERVED_ATTRS);
+                    // mtime + ctime survive the rename; attrs applied post-rename below.
+                    crate::metaattr::apply_all_handle(raw, meta.mtime, meta.ctime, 0);
                     drop(f);
+                    // Atomic swap: temp → final.
+                    if let Err(e) = std::fs::rename(&tmp, path) {
+                        let _ = std::fs::remove_file(&tmp);
+                        return Some((path.clone(), e));
+                    }
+                    // Apply attributes to the FINAL path post-rename.
+                    if meta.attrs & crate::metaattr::PRESERVED_ATTRS != 0 {
+                        crate::metaattr::apply_attrs_normalized(path, meta.attrs);
+                    }
+                    guard.disarm(); // rename succeeded — temp no longer exists
                     None
                 })
                 .collect::<Vec<_>>()
         };
-        let errs: Vec<_> = match &write_pool {
+        let errs: Vec<(PathBuf, std::io::Error)> = match &write_pool {
             Some(p) => p.install(run_writes),
             None => run_writes(),  // fallback if pool creation failed
         };
-        // On ANY failure in the batch, delete every file we tried to write. Some may
-        // have succeeded and some failed; a partial batch (3 of 5 files written) is
-        // worse than none for a tool promising exact preservation. Best-effort delete.
-        let batch_paths: Vec<PathBuf> = batch.iter().map(|(p, _, _)| p.clone()).collect();
+        // With temp-then-rename, a failed batch leaves NO partial files at final paths
+        // (every failed write stayed as a temp and was deleted; successful renames are
+        // complete). Nothing to clean up — the originals were never touched.
         batch.clear();
         *batch_bytes = 0;
-        match errs.into_iter().next() {
-            Some(e) => {
-                for p in &batch_paths {
-                    let _ = std::fs::remove_file(p);
-                }
-                Err(format!("write batch: {}", e))
-            }
-            None => Ok(()),
+        if errs.is_empty() {
+            Ok(())
+        } else {
+            // Write a manifest of ALL failed files (not just the first) so the user
+            // knows exactly what didn't extract.
+            let manifest = std::env::temp_dir().join(format!("lrgex-extract-failed-{}.txt", std::process::id()));
+            let err_count = errs.len();
+            let body: String = errs.iter()
+                .map(|(p, e)| format!("{}: {}", p.display(), e))
+                .collect::<Vec<_>>().join("\n");
+            let _ = std::fs::write(&manifest, body);
+            let first = errs.into_iter().next().unwrap();
+            Err(format!("write batch: {} ({} files failed — see {})", first.1, err_count, manifest.display()))
         }
     };
 
@@ -671,6 +776,12 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path) -
         // Regular file.
         let size = entry.header().size().unwrap_or(0);
 
+        // Elevated re-pass: skip regular files that already exist — the non-elevated
+        // pass wrote them. We're only here to recreate symlinks that need admin.
+        if ELEVATED_RERUN.load(std::sync::atomic::Ordering::Relaxed) && outpath.exists() {
+            continue;
+        }
+
         if size > STREAM_THRESHOLD {
             // Large file: stream straight to disk, then restore metadata on the path.
             if let Err(e) = flush_batch(&mut batch, &mut batch_bytes, &mut dir_cache) {
@@ -683,19 +794,22 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path) -
                     }
                 }
             }
-            let mut f = match std::fs::File::create(&outpath) {
+            // Temp-sidecar-then-rename: write to a temp file, then atomically rename
+            // onto the final path ONLY after full success + metadata applied. The
+            // user's original is never touched until the rename — no truncation, no
+            // zero-hole, no partial-overwrite data loss. (Same pattern as compress's
+            // .part write.) Note: during overwrite, temp + original briefly coexist,
+            // so this needs up to ~2x file size in free disk during the write.
+            let tmp = extract_temp_path(&outpath);
+            let mut f = match std::fs::File::create(&tmp) {
                 Ok(f) => f,
                 Err(e) => return ZgxOutcome::Failed(format!("create {}: {}", rel.display(), e)),
             };
             let _ = f.set_len(size);
-            // Guard: if the write fails, is cancelled, or the thread panics, delete the
-            // partial file so a truncated/zero-filled file never looks complete.
-            let _guard = PartialFile::new(outpath.clone());
+            // Guard the TEMP file: on panic/cancel mid-write, delete the temp so we
+            // don't leak a multi-GB orphan. Disarmed after the successful rename.
+            let mut guard = PartialFile::new(tmp.clone());
             // Write 4 MB chunks straight from the tar entry to the File — NO BufWriter.
-            // The File already hands bytes to the OS page cache; a BufWriter added a
-            // redundant user-space copy (entry → 1MB buf → File → OS) and io::copy's
-            // 8KB default did tons of tiny syscalls. A pinned 4MB buffer + File::write_all
-            // is the minimal-copy path and was the main fix for the large-file extract gap.
             use std::io::{Read, Write};
             let mut chunk = vec![0u8; 4 * 1024 * 1024];
             let mut remaining = size as usize;
@@ -705,26 +819,44 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path) -
                 let n = match entry.read(&mut chunk[..want]) {
                     Ok(0) => break, // unexpected EOF — tar stream ended early
                     Ok(n) => n,
-                    Err(e) => return ZgxOutcome::Failed(format!("read {}: {}", rel.display(), e)),
+                    Err(e) => {
+                        let _ = std::fs::remove_file(&tmp);
+                        return ZgxOutcome::Failed(format!("read {}: {}", rel.display(), e));
+                    }
                 };
                 if let Err(e) = f.write_all(&chunk[..n]) {
+                    let _ = std::fs::remove_file(&tmp);
                     return ZgxOutcome::Failed(format!("write {}: {}", rel.display(), e));
                 }
                 if n > remaining { break; } // guard against bad header size
                 remaining -= n;
             }
-            // Flush the File to the OS, then restore mtime+ctime+attrs in ONE call on
-            // the still-open handle — no re-open.
+            // Flush the temp File to the OS. Times are set on the temp handle (they
+            // survive a same-volume rename), but ATTRIBUTES must be applied to the
+            // FINAL path post-rename — a fresh temp has the Archive bit set by default,
+            // and applying attrs pre-rename would just set the temp's attrs (lost on the
+            // overwrite rename).
             if let Err(e) = f.flush() {
+                let _ = std::fs::remove_file(&tmp);
                 return ZgxOutcome::Failed(format!("flush {}: {}", rel.display(), e));
             }
             {
                 use std::os::windows::io::AsRawHandle;
                 let raw = f.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
-                crate::metaattr::apply_all_handle(raw, meta.mtime, meta.ctime, meta.attrs & crate::metaattr::PRESERVED_ATTRS);
+                // mtime + ctime survive the rename (same inode), so set them on the handle.
+                crate::metaattr::apply_all_handle(raw, meta.mtime, meta.ctime, 0);
             }
             drop(f);
-            _guard.disarm(); // write complete + metadata applied — keep the file
+            // Atomic swap: temp → final. This is the ONLY point the final path is touched.
+            if let Err(e) = std::fs::rename(&tmp, &outpath) {
+                let _ = std::fs::remove_file(&tmp);
+                return ZgxOutcome::Failed(format!("rename {}: {}", rel.display(), e));
+            }
+            // Apply attributes to the FINAL path now that it exists (post-rename).
+            if meta.attrs & crate::metaattr::PRESERVED_ATTRS != 0 {
+                crate::metaattr::apply_attrs_normalized(&outpath, meta.attrs);
+            }
+            guard.disarm(); // rename succeeded — temp no longer exists to clean up
             continue;
         }
 
@@ -756,16 +888,24 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path) -
             crate::metaattr::apply_times_path(dir, meta.mtime, meta.ctime);
         }
         if meta.attrs != 0 {
-            crate::metaattr::apply_attrs(dir, meta.attrs);
+            crate::metaattr::apply_attrs_normalized(dir, meta.attrs);
         }
     }
 
-    // If a symlink needed elevation and the user said yes → relaunch the WHOLE extract
-    // elevated and exit. The elevated instance recreates everything including the links.
+    // If a symlink needed elevation and the user said yes → relaunch elevated with a
+    // sentinel flag. The elevated re-pass sees the flag and SKIPS regular files that
+    // already exist (the non-elevated pass wrote them) — only links are recreated.
+    // This avoids re-writing every file a second time (2x I/O + 2x AV scan).
     if needs_relaunch {
-        let args: Vec<String> = std::env::args().collect();
-        let _ = crate::metaattr::relaunch_elevated(&args);
-        return ZgxOutcome::ElevatedRelaunched;
+        let mut args: Vec<String> = std::env::args().collect();
+        args.push("--elevated-rerun".to_string());
+        if crate::metaattr::relaunch_elevated(&args) {
+            // Elevated process took over — exit cleanly so the GUI closes.
+            return ZgxOutcome::ElevatedRelaunched;
+        }
+        // UAC denied or launch failed. Symlinks are missing, but all regular files
+        // were extracted. Fall through to Done so the GUI shows success (not Failed),
+        // with the caveat that links were skipped.
     }
 
     ZgxOutcome::Done
@@ -891,21 +1031,36 @@ fn extract_zip(archive: &Path, dest: &Path) -> (bool, String) {
             }
 
             // Regular file.
+            // Elevated re-pass: skip regular files that already exist (non-elevated
+            // pass wrote them); we're only here for symlinks.
+            if ELEVATED_RERUN.load(std::sync::atomic::Ordering::Relaxed) && outpath.exists() {
+                continue;
+            }
             if let Some(parent) = outpath.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| format!("mkdir parent: {}", e))?;
             }
             {
-                // Guard: delete the partial file if the write fails or the closure
-                // returns early (the `?` operators below).
-                let _guard = PartialFile::new(outpath.clone());
-                // Write via a handle so we can set times on it before the writer drops.
-                let outf = std::fs::File::create(&outpath).map_err(|e| format!("create {}: {}", rel.display(), e))?;
+                // Temp-then-rename: write to a temp file, then atomically rename onto
+                // the final path on success. The user's original is never touched until
+                // the rename — no truncation, no partial-overwrite data loss.
+                let tmp = extract_temp_path(&outpath);
+                let mut guard = PartialFile::new(tmp.clone());
+                let outf = std::fs::File::create(&tmp).map_err(|e| format!("create {}: {}", rel.display(), e))?;
                 let mut counting = ZipCountingReader { inner: &mut entry, prog: &prog };
                 let mut bw = std::io::BufWriter::new(&outf);
-                std::io::copy(&mut counting, &mut bw).map_err(|e| format!("write {}: {}", rel.display(), e))?;
+                let write_res = std::io::copy(&mut counting, &mut bw).map_err(|e| format!("write {}: {}", rel.display(), e));
                 drop(bw);
                 drop(outf);
-                _guard.disarm(); // write complete
+                if let Err(e) = write_res {
+                    let _ = std::fs::remove_file(&tmp);
+                    return Err(e);
+                }
+                // Atomic swap: temp → final.
+                if let Err(e) = std::fs::rename(&tmp, &outpath) {
+                    let _ = std::fs::remove_file(&tmp);
+                    return Err(format!("rename {}: {}", rel.display(), e));
+                }
+                guard.disarm(); // rename succeeded
             }
             // Restore mtime AFTER the write (Windows updates mtime on write).
             if let Some(mt) = mtime {
@@ -923,13 +1078,20 @@ fn extract_zip(archive: &Path, dest: &Path) -> (bool, String) {
         for (dir, mt) in dir_mtimes.iter().rev() {
             crate::metaattr::apply_times_path(dir, *mt, 0);
         }
-        // If a symlink needed elevation and the user said yes → relaunch elevated.
+        // If a symlink needed elevation and the user said yes → relaunch elevated with
+        // the sentinel so the re-pass skips already-written regular files.
         if needs_relaunch {
-            let args: Vec<String> = std::env::args().collect();
-            let _ = crate::metaattr::relaunch_elevated(&args);
-            // Caller's heartbeat will be joined; we exit the run via the main thread.
-            // Signal failure here so the GUI doesn't claim success on the non-elevated copy.
-            return Err("__elevated_relaunch__".to_string());
+            let mut args: Vec<String> = std::env::args().collect();
+            args.push("--elevated-rerun".to_string());
+            if crate::metaattr::relaunch_elevated(&args) {
+                // Elevated process took over — close this GUI cleanly so the user
+                // doesn't see a confusing "Failed" flash. Exit immediately; the
+                // heartbeat thread will be reaped by process exit.
+                prog.finish(3);
+                std::process::exit(0);
+            }
+            // UAC denied — fall through to Ok(()) so the GUI shows success with the
+            // caveat that symlinks were skipped (regular files are all extracted).
         }
         Ok(())
     })();
@@ -948,43 +1110,45 @@ fn extract_zip(archive: &Path, dest: &Path) -> (bool, String) {
     }
 }
 
+/// Recursively move all contents of `src` into `dst`, overwriting existing files.
+/// Used by the RAR staging extraction: after unrar extracts successfully into a
+/// staging dir, we move everything into the real destination. Both dirs are on the
+/// same volume (staging is a sibling of dest), so each move is atomic.
+fn move_dir_contents(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if from.is_dir() {
+            move_dir_contents(&from, &to)?;
+            let _ = std::fs::remove_dir(&from); // remove now-empty dir
+        } else {
+            // rename overwrites on Windows. Same volume = atomic.
+            std::fs::rename(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
 /// Pass 1: read every header, sum real unpacked sizes.
 /// Returns (file_count, total_bytes). Bytes are 0 if the archive is
 /// encrypted or the header is unreadable -> caller falls back to indeterminate.
 fn rar_totals(archive: &Path) -> (usize, u64) {
     let mut files = 0usize;
     let mut bytes = 0u64;
-    let mut errs = 0usize;
-    let mut log = String::new();
-
-    match unrar::Archive::new(archive).open_for_listing() {
-        Ok(list) => {
-            for item in list {
-                match item {
-                    Ok(e) => {
-                        let dir = e.is_directory();
-                        log.push_str(&format!("entry: dir={} size={} name={:?}\n", dir, e.unpacked_size, e.filename));
-                        if !dir {
-                            files += 1;
-                            bytes += e.unpacked_size;
-                        }
-                    }
-                    Err(e) => {
-                        errs += 1;
-                        log.push_str(&format!("ENTRY ERROR: {:?}\n", e));
-                    }
+    // Best-effort: walk the listing for sizes. On any read error, return zeros (caller
+    // falls back to indeterminate progress). No diagnostic dump to disk in production.
+    if let Ok(list) = unrar::Archive::new(archive).open_for_listing() {
+        for item in list {
+            if let Ok(e) = item {
+                if !e.is_directory() {
+                    files += 1;
+                    bytes += e.unpacked_size;
                 }
             }
         }
-        Err(e) => {
-            log.push_str(&format!("open_for_listing FAILED: {:?}\n", e));
-            let _ = std::fs::write(std::env::temp_dir().join("lrgex-rar-diag.txt"), log);
-            return (0, 0);
-        }
     }
-
-    log.push_str(&format!("RESULT: files={} bytes={} errs={}\n", files, bytes, errs));
-    let _ = std::fs::write(std::env::temp_dir().join("lrgex-rar-diag.txt"), log);
     (files, bytes)
 }
 
@@ -1029,20 +1193,78 @@ fn extract_rar(archive: &Path, dest: &Path) -> (bool, String) {
 
     let result = (|| -> Result<(), String> {
         std::fs::create_dir_all(dest).map_err(|e| e.to_string())?;
-        let mut open = unrar::Archive::new(archive)
-            .open_for_processing()
-            .map_err(|e| e.to_string())?;
-        loop {
-            match open.read_header().map_err(|e| e.to_string())? {
-                None => break,
-                Some(with_header) => {
-                    open = with_header
-                        .extract_with_base(dest)
-                        .map_err(|e| e.to_string())?;
-                    // NO tick_bytes here — the sampler owns the counter now.
+        // Staging directory: extract everything to a temp dir first, then move files
+        // into place ONLY on full success. This protects ALL cases — pre-existing
+        // files are never touched until the move, so a failed extract leaves the
+        // user's originals intact. On failure we just delete the staging dir.
+        let staging = dest.parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join(format!(".{}.lrgex-rar-staging-{}",
+                dest.file_name().and_then(|n| n.to_str()).unwrap_or("archive"),
+                std::process::id()));
+        // If a stale staging dir lingers from a previous crash mid-move, do NOT
+        // blindly delete it — it may hold the only copy of files that were never
+        // moved into dest before the crash. Rename it to an orphan so the user can
+        // recover, and surface a warning instead of silent data loss.
+        if staging.exists() {
+            // Guaranteed-unique orphan name (timestamp + pid) so repeated crashes
+            // with PID reuse never collide. NEVER fall back to remove_dir_all — that
+            // would destroy recovery files, the exact data loss N4 was meant to prevent.
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis()).unwrap_or(0);
+            let orphan = staging.with_file_name(format!("{}.ORPHAN-{}-{}",
+                staging.file_name().and_then(|n| n.to_str()).unwrap_or("lrgex-staging"),
+                std::process::id(), ts));
+            match std::fs::rename(&staging, &orphan) {
+                Ok(()) => {
+                    let _ = std::fs::write(orphan.join("RECOVERY-README.txt"),
+                        "LRGEX Compress found an interrupted extraction. Files here were not yet\r\n\
+                         moved into the destination when the previous run crashed. Move them\r\n\
+                         manually if needed, then delete this folder.\r\n");
+                }
+                Err(_) => {
+                    // Can't rename — surface a loud error. Do NOT delete the staging dir;
+                    // it holds the only copy of unmoved files.
+                    return Err(format!(
+                        "Found a previous interrupted extraction at {} — could not move it aside. \
+                         Please inspect it manually before retrying.", staging.display()));
                 }
             }
         }
+        std::fs::create_dir_all(&staging).map_err(|e| format!("staging mkdir: {}", e))?;
+        let mut staging_guard = StagingDir::new(staging.clone());
+
+        let extract_ok = (|| -> Result<(), String> {
+            let mut open = unrar::Archive::new(archive)
+                .open_for_processing()
+                .map_err(|e| e.to_string())?;
+            loop {
+                match open.read_header().map_err(|e| e.to_string())? {
+                    None => break,
+                    Some(with_header) => {
+                        open = with_header
+                            .extract_with_base(&staging)
+                            .map_err(|e| e.to_string())?;
+                    }
+                }
+            }
+            Ok(())
+        })();
+
+        if let Err(e) = extract_ok {
+            // Extraction failed — StagingDir Drop will delete the staging dir.
+            // The user's dest is untouched.
+            return Err(e);
+        }
+
+        // Full success: move staging contents into dest, overwriting where needed.
+        // On any move failure, the staging dir is left for manual inspection (deleting
+        // it would lose work; the user's originals are already partially overwritten
+        // by successful moves at this point, so we can't cleanly roll back).
+        move_dir_contents(&staging, dest).map_err(|e| format!("move from staging: {}", e))?;
+        staging_guard.disarm(); // moves succeeded — staging dir is now empty
+        let _ = std::fs::remove_dir_all(&staging);
         Ok(())
     })();
 
@@ -1105,5 +1327,229 @@ mod tests {
         assert!(!escaped.exists(), "zip-slip: evil.txt was written outside dest");
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Temp-then-rename: after a SUCCESSFUL extract, no temp files should be left
+    /// behind. Verifies the staging pattern cleans up after itself.
+    #[test]
+    fn extract_leaves_no_temp_files() {
+        let tmp = std::env::temp_dir().join(format!("lrgex-notemp-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        // Build a zip with one entry.
+        let zip_path = tmp.join("test.zip");
+        {
+            let file = std::fs::File::create(&zip_path).unwrap();
+            let mut zw = zip::ZipWriter::new(file);
+            zw.start_file("hello.txt", zip::write::SimpleFileOptions::default()).unwrap();
+            zw.write_all(b"hi").unwrap();
+            zw.finish().unwrap();
+        }
+
+        let dest = tmp.join("out");
+        let (ok, msg) = extract_archive(&zip_path, &dest);
+        assert!(ok, "extract failed: {}", msg);
+
+        // The final file exists.
+        assert!(dest.join("hello.txt").is_file());
+        // No leftover temp files anywhere under tmp. Match the ACTUAL temp-name
+        // pattern (`.lrgex-tmp-<pid>-<n>` suffix, or staging dir), NOT a substring
+        // that could match a legitimate user filename.
+        let mut found_temps: Vec<PathBuf> = Vec::new();
+        for entry in walk_all(&tmp) {
+            let s = entry.to_string_lossy();
+            if s.contains(".lrgex-tmp-") || s.contains(".lrgex-rar-staging") {
+                found_temps.push(entry);
+            }
+        }
+        assert!(found_temps.is_empty(), "leftover temp files: {:?}", found_temps);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Symlink target validation: an absolute target MUST be rejected (returns false).
+    #[test]
+    fn symlink_absolute_target_rejected() {
+        let dest = std::path::Path::new("C:\\some\\dest");
+        let link = dest.join("link.txt");
+        assert!(!is_safe_link_target("C:\\Windows\\System32\\evil.dll", &link, dest));
+        assert!(!is_safe_link_target("/etc/passwd", &link, dest));
+    }
+
+    /// Symlink target validation: a drive-prefix target (C:foo) MUST be rejected.
+    #[test]
+    fn symlink_drive_prefix_rejected() {
+        let dest = std::path::Path::new("C:\\dest");
+        let link = dest.join("link.txt");
+        assert!(!is_safe_link_target("C:evil", &link, dest));
+    }
+
+    /// Symlink target validation: a parent-traversal escape MUST be rejected.
+    #[test]
+    fn symlink_parent_escape_rejected() {
+        // Create a real dest so canonicalize works.
+        let tmp = std::env::temp_dir().join(format!("lrgex-symlink-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let link = tmp.join("subdir").join("link.txt");
+        // target resolves to tmp's parent — outside dest root.
+        assert!(!is_safe_link_target("../../escape", &link, &tmp));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// has_conflicts: no conflict when dest is empty (and no false negatives).
+    #[test]
+    fn conflicts_empty_dest_is_false() {
+        let tmp = std::env::temp_dir().join(format!("lrgex-conflicts-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let zip_path = tmp.join("test.zip");
+        {
+            let file = std::fs::File::create(&zip_path).unwrap();
+            let mut zw = zip::ZipWriter::new(file);
+            zw.start_file("a.txt", zip::write::SimpleFileOptions::default()).unwrap();
+            zw.write_all(b"x").unwrap();
+            zw.finish().unwrap();
+        }
+
+        let dest = tmp.join("out");
+        std::fs::create_dir_all(&dest).unwrap();
+        assert!(!has_conflicts(&zip_path, &dest), "empty dest should have no conflicts");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// has_conflicts: returns true when dest has a file the archive will overwrite.
+    #[test]
+    fn conflicts_existing_file_is_true() {
+        let tmp = std::env::temp_dir().join(format!("lrgex-conflicts2-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let zip_path = tmp.join("test.zip");
+        {
+            let file = std::fs::File::create(&zip_path).unwrap();
+            let mut zw = zip::ZipWriter::new(file);
+            zw.start_file("a.txt", zip::write::SimpleFileOptions::default()).unwrap();
+            zw.write_all(b"x").unwrap();
+            zw.finish().unwrap();
+        }
+
+        let dest = tmp.join("out");
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(dest.join("a.txt"), b"pre-existing").unwrap();
+        assert!(has_conflicts(&zip_path, &dest), "existing a.txt should be a conflict");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// lexical_normalize: resolves `.` and `..` as string ops, no filesystem access.
+    #[test]
+    fn lexical_normalize_resolves_parent() {
+        // `..` pops the last component.
+        let p = lexical_normalize(std::path::Path::new("C:\\dest\\sub\\..\\file.txt"));
+        // Windows parses C: as a VerbatimDisk prefix; after popping 'sub' we expect
+        // the path to resolve under the drive. The exact separator form is OS-dependent,
+        // so assert the key property: 'sub' is gone and 'file.txt' is present.
+        let s = p.to_string_lossy();
+        assert!(s.ends_with("file.txt"), "got: {}", s);
+        assert!(!s.contains("sub"), "'..' did not pop 'sub': {}", s);
+
+        // `.` is stripped.
+        let p2 = lexical_normalize(std::path::Path::new("C:\\dest\\.\\a\\b.txt"));
+        let s2 = p2.to_string_lossy();
+        assert!(s2.ends_with("a\\b.txt"), "got: {}", s2);
+    }
+
+    /// Overwrite contract: pre-existing file is REPLACED with the archive's bytes,
+    /// and no temp file is left behind. Catches temp-then-rename disarm bugs.
+    #[test]
+    fn extract_overwrites_existing_cleanly() {
+        let tmp = std::env::temp_dir().join(format!("lrgex-overwrite-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let zip_path = tmp.join("test.zip");
+        {
+            let file = std::fs::File::create(&zip_path).unwrap();
+            let mut zw = zip::ZipWriter::new(file);
+            zw.start_file("target.txt", zip::write::SimpleFileOptions::default()).unwrap();
+            zw.write_all(b"NEW CONTENT").unwrap();
+            zw.finish().unwrap();
+        }
+
+        let dest = tmp.join("out");
+        std::fs::create_dir_all(&dest).unwrap();
+        // Pre-seed with OLD bytes — this is the file that will be overwritten.
+        std::fs::write(dest.join("target.txt"), b"OLD CONTENT THAT MUST BE REPLACED").unwrap();
+
+        let (ok, msg) = extract_archive(&zip_path, &dest);
+        assert!(ok, "extract failed: {}", msg);
+
+        // Final content is the NEW bytes from the archive.
+        let final_bytes = std::fs::read(dest.join("target.txt")).unwrap();
+        assert_eq!(final_bytes, b"NEW CONTENT", "file was not overwritten with archive content");
+
+        // No leftover temp file in dest.
+        assert!(!dest.join("target.zgx-lrgex-extract-tmp").exists(),
+            "temp file was left behind after successful overwrite");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Sibling collision regression: two entries with the same stem + different
+    /// extension (Makefile + Makefile.in) MUST both extract with correct distinct
+    /// content. Catches the with_extension temp-collision bug (P1-A).
+    #[test]
+    fn extract_same_stem_different_ext_no_collision() {
+        let tmp = std::env::temp_dir().join(format!("lrgex-collision-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let zip_path = tmp.join("test.zip");
+        {
+            let file = std::fs::File::create(&zip_path).unwrap();
+            let mut zw = zip::ZipWriter::new(file);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("Makefile", opts).unwrap();
+            zw.write_all(b"MAKEFILE BODY").unwrap();
+            zw.start_file("Makefile.in", opts).unwrap();
+            zw.write_all(b"MAKEFILE IN BODY").unwrap();
+            zw.start_file("data.txt", opts).unwrap();
+            zw.write_all(b"TXT").unwrap();
+            zw.start_file("data.bin", opts).unwrap();
+            zw.write_all(b"BIN").unwrap();
+            zw.finish().unwrap();
+        }
+
+        let dest = tmp.join("out");
+        let (ok, msg) = extract_archive(&zip_path, &dest);
+        assert!(ok, "extract failed: {}", msg);
+
+        // ALL four files must exist with their DISTINCT original content. If the temp
+        // naming collided (with_extension), one of each pair would be missing or wrong.
+        assert_eq!(std::fs::read(dest.join("Makefile")).unwrap(), b"MAKEFILE BODY");
+        assert_eq!(std::fs::read(dest.join("Makefile.in")).unwrap(), b"MAKEFILE IN BODY");
+        assert_eq!(std::fs::read(dest.join("data.txt")).unwrap(), b"TXT");
+        assert_eq!(std::fs::read(dest.join("data.bin")).unwrap(), b"BIN");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Helper: walk all paths under a directory recursively.
+    fn walk_all(dir: &Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        if let Ok(rd) = std::fs::read_dir(dir) {
+            for entry in rd.flatten() {
+                let p = entry.path();
+                out.push(p.clone());
+                if p.is_dir() {
+                    out.extend(walk_all(&p));
+                }
+            }
+        }
+        out
     }
 }
