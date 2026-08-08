@@ -135,6 +135,19 @@ without any conversion.
 
 ---
 
+## Vendored dependencies
+
+This project vendors two crates with patches. See their README files for details.
+
+| Crate | Version | Patch | Why |
+|---|---|---|---|
+| `vendor/unrar` | 0.5.8 | UCM_PROCESSDATA byte counter | `.rar` extraction progress bar |
+| `vendor/libz-ng-sys` | 1.1.29 | CMake static CRT defines (/MT + NDEBUG) | Self-contained exe (no VC++ redist needed) |
+
+If either patch is lost during a dependency bump, the app breaks (no .rar progress, or MSVCP140.dll missing on clean Windows).
+
+---
+
 ## License
 
 MIT License for LRGEX-authored code. See [LICENSE](LICENSE).
