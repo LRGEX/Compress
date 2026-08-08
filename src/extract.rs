@@ -172,6 +172,80 @@ pub fn extract_archive(archive: &Path, dest: &Path) -> (bool, String) {
     }
 }
 
+/// Check if extracting this archive into `dest` would overwrite any existing file.
+/// Returns true if at least one entry in the archive points to a path that already
+/// exists on disk under `dest`. Used to prompt the user before overwriting (WinRAR-style).
+/// Best-effort: on any read error, returns false (let the extract path handle the error).
+pub fn has_conflicts(archive: &Path, dest: &Path) -> bool {
+    match detect_format(archive) {
+        Some(Format::Zgx) => zgx_has_conflicts(archive, dest),
+        Some(Format::Zip) => zip_has_conflicts(archive, dest),
+        Some(Format::Rar) => rar_has_conflicts(archive, dest),
+        None => false,
+    }
+}
+
+/// zgx: open the tar+zst stream and walk entry names.
+fn zgx_has_conflicts(archive: &Path, dest: &Path) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = match std::fs::File::open(archive) { Ok(f) => f, Err(_) => return false };
+    let mut head = [0u8; 16];
+    let n = file.read(&mut head).unwrap_or(0);
+    let start = if n >= 6 && &head[0..5] == b"LRGEX" && head[5] == 0x01 { 14 }
+               else if n >= 12 && head[8..12] == [0x28,0xb5,0x2f,0xfd] { 8 }
+               else if n >= 4 && head[0..4] == [0x28,0xb5,0x2f,0xfd] { 0 }
+               else { return false };
+    if file.seek(SeekFrom::Start(start as u64)).is_err() { return false; }
+    let decoder = match zstd::Decoder::new(file) { Ok(d) => d, Err(_) => return false };
+    let mut tar = tar::Archive::new(std::io::BufReader::with_capacity(256 * 1024, decoder));
+    let entries = match tar.entries() { Ok(e) => e, Err(_) => return false };
+    for entry in entries {
+        if let Ok(e) = entry {
+            // Skip directory entries — a pre-existing subdir is a harmless merge
+            // (create_dir_all), not a conflict. Only flag real file collisions.
+            if e.header().entry_type().is_dir() { continue; }
+            if let Ok(p) = e.path() {
+                // Same guard as the real extract: skip unsafe paths.
+                use std::path::Component;
+                if p.is_absolute() { continue; }
+                if p.components().any(|c| !matches!(c, Component::Normal(_) | Component::CurDir)) { continue; }
+                let out = dest.join(&p);
+                if out.exists() { return true; }
+            }
+        }
+    }
+    false
+}
+
+/// zip: walk the central directory.
+fn zip_has_conflicts(archive: &Path, dest: &Path) -> bool {
+    let file = match std::fs::File::open(archive) { Ok(f) => f, Err(_) => return false };
+    let mut za = match zip::ZipArchive::new(file) { Ok(z) => z, Err(_) => return false };
+    for i in 0..za.len() {
+        if let Ok(entry) = za.by_index(i) {
+            // Skip directory entries — matching rar_has_conflicts + extract semantics.
+            if entry.is_dir() { continue; }
+            if let Some(rel) = entry.enclosed_name() {
+                if dest.join(&rel).exists() { return true; }
+            }
+        }
+    }
+    false
+}
+
+/// rar: walk the listing.
+fn rar_has_conflicts(archive: &Path, dest: &Path) -> bool {
+    let list = match unrar::Archive::new(archive).open_for_listing() { Ok(l) => l, Err(_) => return false };
+    for item in list {
+        if let Ok(e) = item {
+            if e.is_directory() { continue; }
+            let p = dest.join(&e.filename);
+            if p.exists() { return true; }
+        }
+    }
+    false
+}
+
 /// .zgx = tar + zstd. Byte-counting via ByteReader so the heartbeat tracks bytes.
 fn extract_zgx(archive: &Path, dest: &Path) -> (bool, String) {
     progress::clear_status();

@@ -237,6 +237,21 @@ fn confirm_overwrite(dest: &std::path::Path) -> bool {
         == rfd::MessageDialogResult::Yes
 }
 
+/// WinRAR-style overwrite confirmation for EXTRACTION. Called when the archive
+/// contains at least one file that would overwrite an existing file in the dest.
+/// `dest_name` is the destination folder/location shown in the prompt.
+fn confirm_extract_overwrite(dest_name: &str) -> bool {
+    rfd::MessageDialog::new()
+        .set_title("Confirm Replace")
+        .set_description(&format!(
+            "One or more files in '{}' already exist.\n\nDo you want to replace them?",
+            dest_name
+        ))
+        .set_buttons(rfd::MessageButtons::YesNo)
+        .show()
+        == rfd::MessageDialogResult::Yes
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let is_extract = args.len() >= 3 && args[1] == "-x";
@@ -266,6 +281,19 @@ fn main() {
         } else {
             archive.with_extension("")
         };
+        // WinRAR-style overwrite check: scan the archive for entries that would
+        // overwrite existing files in the destination. If ANY conflict, prompt.
+        // Works for normal extract AND extract-here (both check archive contents).
+        if extract::has_conflicts(&archive, &dest) {
+            let dest_name = if extract_here {
+                dest.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
+            } else {
+                dest.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
+            };
+            if !confirm_extract_overwrite(&dest_name) {
+                return; // user clicked No — abort
+            }
+        }
         run_one(op_label, Some(op_detail), false, dest, OpKind::Extract(archive));
         return;
     }
