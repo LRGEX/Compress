@@ -25,3 +25,5 @@ vendor/unrar/data/
 
 # pi agent working state (local only)
 .pi/
+latest.json.sig
+wiki/
