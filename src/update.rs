@@ -152,7 +152,7 @@ pub fn apply_update(info: UpdateInfo) {
         }
     };
 
-    let mut reader = resp.into_reader();
+    let reader = resp.into_reader();
     // Finding #2: Cap download at 100 MB to prevent memory exhaustion DoS from a
     // poisoned manifest. The installer is ~17 MB; 100 MB is generous headroom.
     const MAX_INSTALLER_BYTES: u64 = 100 * 1024 * 1024;
