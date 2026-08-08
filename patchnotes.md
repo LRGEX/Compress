@@ -5,7 +5,12 @@
 - Overwrite confirmation prompts added for both compression and extraction
 - Partial files are now cleaned up if extraction fails or is cancelled
 - Symlink targets inside archives are validated before extraction
-- Auto-update now works for all install types
+- Auto-update now works for all install types (per-user, Program Files, choco, GitHub)
+- Read-only files no longer block overwrite (atomic rename clears the attribute)
+- Extraction continues past locked files instead of aborting the whole archive
+- Skipped files are listed in a .lrgex-skipped.txt next to the destination
+- Archive bit and other Windows attributes preserved exactly on round-trip
+- Temp files use unique names to prevent collisions between same-name files
 
 ---
 

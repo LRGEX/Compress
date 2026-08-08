@@ -60,6 +60,7 @@ Extracts ZIP, RAR, and ZGX archives. You don't need WinRAR or 7-Zip installed.
 - ✓ ZIP extraction
 - ✓ RAR extraction
 - ✓ Empty folder preservation
+- ✓ Overwrite confirmation before replacing existing files
 - ✓ Ed25519 cryptographically signed auto-updates
 - ✓ MIT License
 - ✓ No administrator required
@@ -78,6 +79,8 @@ Extracts ZIP, RAR, and ZGX archives. You don't need WinRAR or 7-Zip installed.
   symbolic links all round-trip identically. NTFS alternate data streams are not
   supported (rarely used; not planned).
 - **Cancel is clean.** Click Cancel, the partial archive is deleted. No orphaned files.
+- **Resilient extraction.** If one file is locked or unreadable, extraction continues
+  and the file is listed in a skipped-files report — not a total failure.
 - **Signed auto-updates.** Every update is cryptographically verified using Ed25519
   before installation.
 - **Per-user install.** No admin prompt. No UAC. Works on locked-down corporate machines.
