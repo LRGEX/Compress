@@ -49,3 +49,4 @@ strip = true
 
 [patch.crates-io]
 unrar = { path = "vendor/unrar" }
+libz-ng-sys = { path = "vendor/libz-ng-sys" }
