@@ -1,5 +1,7 @@
 ; LRGEX Compress - Inno Setup installer
-; Per-user install (HKCU registry, no UAC). Right-click only - no Start Menu shortcut.
+; Dual-mode install (HKA registry = HKLM when admin, HKCU when per-user).
+; PrivilegesRequiredOverridesAllowed lets Chocolatey pass /ALLUSERS for machine-wide,
+; while the portable download runs per-user with no UAC. Right-click only - no Start Menu.
 ;
 ; ONE cascading right-click entry ("LRGEX"):
 ;   right-click a FOLDER -> "LRGEX" -> hover -> "Compress"  -> folder.zgx
@@ -10,7 +12,7 @@
 ; TO COMPILE: "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\lrgex-compress.iss
 
 #define MyAppName      "LRGEX Compress"
-#define MyAppVersion "1.4.1"
+#define MyAppVersion "1.4.2"
 #define MyAppPublisher "LRGEX"
 #define MyAppExeName   "lrgex-compress.exe"
 
@@ -19,10 +21,12 @@ AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 UninstallDisplayName={#MyAppName}
-DefaultDirName={localappdata}\LRGEX Compress
+DefaultDirName={autopf}\LRGEX Compress
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
-ArchitecturesAllowed=x64
+PrivilegesRequiredOverridesAllowed=dialog commandline
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
 Compression=lzma2
 SolidCompression=yes
 ; deploy.ps1 overrides this at compile time via ISCC's /F flag, producing
@@ -40,105 +44,105 @@ Source: "..\assets\icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Registry]
 ; Ensure the ContextMenus parent keys are fully removed on uninstall (no orphan shells).
-Root: HKCU; Subkey: "Software\Classes\Directory\ContextMenus\LRGEX"; Flags: uninsdeletekey
-Root: HKCU; Subkey: "Software\Classes\*\ContextMenus\LRGEX"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\Directory\ContextMenus\LRGEX"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\*\ContextMenus\LRGEX"; Flags: uninsdeletekey
 
 ; ===== FOLDER: cascade "LRGEX" -> hover -> "Compress" =====
-Root: HKCU; Subkey: "Software\Classes\Directory\shell\LRGEX"; \
+Root: HKA; Subkey: "Software\Classes\Directory\shell\LRGEX"; \
     ValueType: string; ValueName: ""; ValueData: "LRGEX"; Flags: uninsdeletekey
-Root: HKCU; Subkey: "Software\Classes\Directory\shell\LRGEX"; \
+Root: HKA; Subkey: "Software\Classes\Directory\shell\LRGEX"; \
     ValueType: string; ValueName: "MUIVerb"; ValueData: "LRGEX"; Flags: uninsdeletekey
-Root: HKCU; Subkey: "Software\Classes\Directory\shell\LRGEX"; \
+Root: HKA; Subkey: "Software\Classes\Directory\shell\LRGEX"; \
     ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName},0"
-Root: HKCU; Subkey: "Software\Classes\Directory\shell\LRGEX"; \
+Root: HKA; Subkey: "Software\Classes\Directory\shell\LRGEX"; \
     ValueType: string; ValueName: "ExtendedSubCommandsKey"; ValueData: "Directory\ContextMenus\LRGEX"
-Root: HKCU; Subkey: "Software\Classes\Directory\ContextMenus\LRGEX\shell\compress"; \
+Root: HKA; Subkey: "Software\Classes\Directory\ContextMenus\LRGEX\shell\compress"; \
     ValueType: string; ValueName: ""; ValueData: "Compress"; Flags: uninsdeletekey
-Root: HKCU; Subkey: "Software\Classes\Directory\ContextMenus\LRGEX\shell\compress"; \
+Root: HKA; Subkey: "Software\Classes\Directory\ContextMenus\LRGEX\shell\compress"; \
     ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName},0"
-Root: HKCU; Subkey: "Software\Classes\Directory\ContextMenus\LRGEX\shell\compress\command"; \
+Root: HKA; Subkey: "Software\Classes\Directory\ContextMenus\LRGEX\shell\compress\command"; \
     ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""
 
 ; ===== FILES (all): cascade "LRGEX" -> hover -> "Compress" =====
-Root: HKCU; Subkey: "Software\Classes\*\shell\LRGEX"; \
+Root: HKA; Subkey: "Software\Classes\*\shell\LRGEX"; \
     ValueType: string; ValueName: ""; ValueData: "LRGEX"; Flags: uninsdeletekey
-Root: HKCU; Subkey: "Software\Classes\*\shell\LRGEX"; \
+Root: HKA; Subkey: "Software\Classes\*\shell\LRGEX"; \
     ValueType: string; ValueName: "MUIVerb"; ValueData: "LRGEX"; Flags: uninsdeletekey
-Root: HKCU; Subkey: "Software\Classes\*\shell\LRGEX"; \
+Root: HKA; Subkey: "Software\Classes\*\shell\LRGEX"; \
     ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName},0"
-Root: HKCU; Subkey: "Software\Classes\*\shell\LRGEX"; \
+Root: HKA; Subkey: "Software\Classes\*\shell\LRGEX"; \
     ValueType: string; ValueName: "ExtendedSubCommandsKey"; ValueData: "*\ContextMenus\LRGEX"
-Root: HKCU; Subkey: "Software\Classes\*\ContextMenus\LRGEX\shell\compress"; \
+Root: HKA; Subkey: "Software\Classes\*\ContextMenus\LRGEX\shell\compress"; \
     ValueType: string; ValueName: ""; ValueData: "Compress"; Flags: uninsdeletekey
-Root: HKCU; Subkey: "Software\Classes\*\ContextMenus\LRGEX\shell\compress"; \
+Root: HKA; Subkey: "Software\Classes\*\ContextMenus\LRGEX\shell\compress"; \
     ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName},0"
-Root: HKCU; Subkey: "Software\Classes\*\ContextMenus\LRGEX\shell\compress\command"; \
+Root: HKA; Subkey: "Software\Classes\*\ContextMenus\LRGEX\shell\compress\command"; \
     ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""
 
 ; ===== .zgx: cascade "LRGEX" -> hover -> "Extract" (+ double-click = extract) =====
-Root: HKCU; Subkey: "Software\Classes\.zgx"; \
+Root: HKA; Subkey: "Software\Classes\.zgx"; \
     ValueType: string; ValueName: ""; ValueData: "LRGEX.zgx"; Flags: uninsdeletekey
-Root: HKCU; Subkey: "Software\Classes\LRGEX.zgx"; \
+Root: HKA; Subkey: "Software\Classes\LRGEX.zgx"; \
     ValueType: string; ValueName: ""; ValueData: "LRGEX Compress Archive"; Flags: uninsdeletekey
-Root: HKCU; Subkey: "Software\Classes\LRGEX.zgx\DefaultIcon"; \
+Root: HKA; Subkey: "Software\Classes\LRGEX.zgx\DefaultIcon"; \
     ValueType: string; ValueData: "{app}\icon.ico,0"
-Root: HKCU; Subkey: "Software\Classes\LRGEX.zgx\shell\open\command"; \
+Root: HKA; Subkey: "Software\Classes\LRGEX.zgx\shell\open\command"; \
     ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" -x ""%1"""
-Root: HKCU; Subkey: "Software\Classes\LRGEX.zgx\shell\LRGEX"; \
+Root: HKA; Subkey: "Software\Classes\LRGEX.zgx\shell\LRGEX"; \
     ValueType: string; ValueName: ""; ValueData: "LRGEX"; Flags: uninsdeletekey
-Root: HKCU; Subkey: "Software\Classes\LRGEX.zgx\shell\LRGEX"; \
+Root: HKA; Subkey: "Software\Classes\LRGEX.zgx\shell\LRGEX"; \
     ValueType: string; ValueName: "MUIVerb"; ValueData: "LRGEX"; Flags: uninsdeletekey
-Root: HKCU; Subkey: "Software\Classes\LRGEX.zgx\shell\LRGEX"; \
+Root: HKA; Subkey: "Software\Classes\LRGEX.zgx\shell\LRGEX"; \
     ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName},0"
-Root: HKCU; Subkey: "Software\Classes\LRGEX.zgx\shell\LRGEX"; \
+Root: HKA; Subkey: "Software\Classes\LRGEX.zgx\shell\LRGEX"; \
     ValueType: string; ValueName: "ExtendedSubCommandsKey"; ValueData: "LRGEX.zgx\ContextMenus\LRGEX"
-Root: HKCU; Subkey: "Software\Classes\LRGEX.zgx\ContextMenus\LRGEX\shell\extract"; \
+Root: HKA; Subkey: "Software\Classes\LRGEX.zgx\ContextMenus\LRGEX\shell\extract"; \
     ValueType: string; ValueName: ""; ValueData: "Extract"; Flags: uninsdeletekey
-Root: HKCU; Subkey: "Software\Classes\LRGEX.zgx\ContextMenus\LRGEX\shell\extract"; \
+Root: HKA; Subkey: "Software\Classes\LRGEX.zgx\ContextMenus\LRGEX\shell\extract"; \
     ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName},0"
-Root: HKCU; Subkey: "Software\Classes\LRGEX.zgx\ContextMenus\LRGEX\shell\extract\command"; \
+Root: HKA; Subkey: "Software\Classes\LRGEX.zgx\ContextMenus\LRGEX\shell\extract\command"; \
     ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" -x ""%1"""
-Root: HKCU; Subkey: "Software\Classes\LRGEX.zgx\ContextMenus\LRGEX\shell\extractHere"; \
+Root: HKA; Subkey: "Software\Classes\LRGEX.zgx\ContextMenus\LRGEX\shell\extractHere"; \
     ValueType: string; ValueName: ""; ValueData: "Extract Here"; Flags: uninsdeletekey
-Root: HKCU; Subkey: "Software\Classes\LRGEX.zgx\ContextMenus\LRGEX\shell\extractHere"; \
+Root: HKA; Subkey: "Software\Classes\LRGEX.zgx\ContextMenus\LRGEX\shell\extractHere"; \
     ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName},0"
-Root: HKCU; Subkey: "Software\Classes\LRGEX.zgx\ContextMenus\LRGEX\shell\extractHere\command"; \
+Root: HKA; Subkey: "Software\Classes\LRGEX.zgx\ContextMenus\LRGEX\shell\extractHere\command"; \
     ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" -x -h ""%1"""
 
 ; ===== .zip and .rar: cascade ONLY under SystemFileAssociations =====
 ; Do NOT take ownership of .zip/.rar — preserves Explorer's built-in zip handler and
 ; WinRAR/7-Zip if installed. Adds "LRGEX -> Extract" to their right-click menu only.
-Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.zip\shell\LRGEX"; \
+Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.zip\shell\LRGEX"; \
     ValueType: string; ValueName: ""; ValueData: "LRGEX"; Flags: uninsdeletekey
-Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.zip\shell\LRGEX"; \
+Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.zip\shell\LRGEX"; \
     ValueType: string; ValueName: "MUIVerb"; ValueData: "LRGEX"; Flags: uninsdeletekey
-Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.zip\shell\LRGEX"; \
+Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.zip\shell\LRGEX"; \
     ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName},0"
-Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.zip\shell\LRGEX"; \
+Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.zip\shell\LRGEX"; \
     ValueType: string; ValueName: "ExtendedSubCommandsKey"; ValueData: "LRGEX.ContextMenus\LRGEX"
 
-Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.rar\shell\LRGEX"; \
+Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.rar\shell\LRGEX"; \
     ValueType: string; ValueName: ""; ValueData: "LRGEX"; Flags: uninsdeletekey
-Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.rar\shell\LRGEX"; \
+Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.rar\shell\LRGEX"; \
     ValueType: string; ValueName: "MUIVerb"; ValueData: "LRGEX"; Flags: uninsdeletekey
-Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.rar\shell\LRGEX"; \
+Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.rar\shell\LRGEX"; \
     ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName},0"
-Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.rar\shell\LRGEX"; \
+Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.rar\shell\LRGEX"; \
     ValueType: string; ValueName: "ExtendedSubCommandsKey"; ValueData: "LRGEX.ContextMenus\LRGEX"
 
 ; Shared submenu used by both .zip and .rar above.
-Root: HKCU; Subkey: "Software\Classes\LRGEX.ContextMenus\LRGEX"; Flags: uninsdeletekey
-Root: HKCU; Subkey: "Software\Classes\LRGEX.ContextMenus\LRGEX\shell\extract"; \
+Root: HKA; Subkey: "Software\Classes\LRGEX.ContextMenus\LRGEX"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\LRGEX.ContextMenus\LRGEX\shell\extract"; \
     ValueType: string; ValueName: ""; ValueData: "Extract"; Flags: uninsdeletekey
-Root: HKCU; Subkey: "Software\Classes\LRGEX.ContextMenus\LRGEX\shell\extract"; \
+Root: HKA; Subkey: "Software\Classes\LRGEX.ContextMenus\LRGEX\shell\extract"; \
     ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName},0"
-Root: HKCU; Subkey: "Software\Classes\LRGEX.ContextMenus\LRGEX\shell\extract\command"; \
+Root: HKA; Subkey: "Software\Classes\LRGEX.ContextMenus\LRGEX\shell\extract\command"; \
     ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" -x ""%1"""
-Root: HKCU; Subkey: "Software\Classes\LRGEX.ContextMenus\LRGEX\shell\extractHere"; \
+Root: HKA; Subkey: "Software\Classes\LRGEX.ContextMenus\LRGEX\shell\extractHere"; \
     ValueType: string; ValueName: ""; ValueData: "Extract Here"; Flags: uninsdeletekey
-Root: HKCU; Subkey: "Software\Classes\LRGEX.ContextMenus\LRGEX\shell\extractHere"; \
+Root: HKA; Subkey: "Software\Classes\LRGEX.ContextMenus\LRGEX\shell\extractHere"; \
     ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName},0"
-Root: HKCU; Subkey: "Software\Classes\LRGEX.ContextMenus\LRGEX\shell\extractHere\command"; \
+Root: HKA; Subkey: "Software\Classes\LRGEX.ContextMenus\LRGEX\shell\extractHere\command"; \
     ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" -x -h ""%1"""
 
 [Code]
@@ -149,7 +153,9 @@ const
 procedure SHChangeNotify(wEventId: Integer; uFlags: Integer; dwItem1: Longint; dwItem2: Longint);
 external 'SHChangeNotify@shell32.dll stdcall';
 
-// Add the app directory to the user's PATH environment variable (HKCU\Environment).
+// Add the app directory to PATH. Uses HKLM when installed as admin (choco/machine-wide),
+// HKCU when installed per-user (portable). Inno's HKA handles the shell verbs;
+// PATH needs the explicit ternary because HKA doesn't apply to [Code] RegWrite calls.
 // Guards against duplicates: if the path is already there (e.g., from a previous install),
 // we don't add it again.
 // Uses REG_EXPAND_SZ so any embedded %variables% in PATH expand correctly.
@@ -157,11 +163,17 @@ procedure AddAppToPath();
 var
   CurrentPath: string;
   AppDir: string;
+  PathRoot: LongInt; // HKEY_LOCAL_MACHINE or HKEY_CURRENT_USER
 begin
   AppDir := ExpandConstant('{app}');
-  if not RegQueryStringValue(HKEY_CURRENT_USER, 'Environment', 'Path', CurrentPath) then begin
+  if IsAdminInstallMode() then
+    PathRoot := HKEY_LOCAL_MACHINE
+  else
+    PathRoot := HKEY_CURRENT_USER;
+
+  if not RegQueryStringValue(PathRoot, 'Environment', 'Path', CurrentPath) then begin
     // No PATH exists yet for this user — create it.
-    RegWriteExpandStringValue(HKEY_CURRENT_USER, 'Environment', 'Path', AppDir);
+    RegWriteExpandStringValue(PathRoot, 'Environment', 'Path', AppDir);
     exit;
   end;
   // Check for duplicate (case-insensitive, wrapping in semicolons to handle edge cases).
@@ -170,7 +182,7 @@ begin
   // Append to PATH (ensure a semicolon separator).
   if (CurrentPath <> '') and (CurrentPath[Length(CurrentPath)] <> ';') then
     CurrentPath := CurrentPath + ';';
-  RegWriteExpandStringValue(HKEY_CURRENT_USER, 'Environment', 'Path', CurrentPath + AppDir);
+  RegWriteExpandStringValue(PathRoot, 'Environment', 'Path', CurrentPath + AppDir);
 end;
 
 // Remove the app directory from the user's PATH on uninstall.
@@ -181,9 +193,15 @@ var
   AppDir: string;
   NewPath: string;
   Found: Boolean;
+  PathRoot: LongInt;
 begin
   AppDir := ExpandConstant('{app}');
-  if not RegQueryStringValue(HKEY_CURRENT_USER, 'Environment', 'Path', CurrentPath) then
+  if IsAdminInstallMode() then
+    PathRoot := HKEY_LOCAL_MACHINE
+  else
+    PathRoot := HKEY_CURRENT_USER;
+
+  if not RegQueryStringValue(PathRoot, 'Environment', 'Path', CurrentPath) then
     exit; // No PATH to remove from.
   // Split PATH into parts by semicolon, filter out the app dir, rejoin.
   NewPath := '';
@@ -203,9 +221,9 @@ begin
   if not Found then exit; // App wasn't in PATH — nothing to do.
   // Write back the cleaned PATH.
   if NewPath = '' then
-    RegDeleteValue(HKEY_CURRENT_USER, 'Environment', 'Path')
+    RegDeleteValue(PathRoot, 'Environment', 'Path')
   else
-    RegWriteExpandStringValue(HKEY_CURRENT_USER, 'Environment', 'Path', NewPath);
+    RegWriteExpandStringValue(PathRoot, 'Environment', 'Path', NewPath);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);

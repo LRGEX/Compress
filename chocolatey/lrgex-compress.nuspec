@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>lrgex-compress</id>
+    <version>1.4.2</version>
+    <title>LRGEX Compress</title>
+    <authors>LRGEX</authors>
+    <projectUrl>https://github.com/LRGEX/Compress</projectUrl>
+    <projectSourceUrl>https://github.com/LRGEX/Compress</projectSourceUrl>
+    <packageSourceUrl>https://github.com/LRGEX/Compress</packageSourceUrl>
+    <iconUrl>https://raw.githubusercontent.com/LRGEX/Compress/main/assets/logo.png</iconUrl>
+    <licenseUrl>https://github.com/LRGEX/Compress/blob/main/LICENSE</licenseUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <summary>Extremely fast Windows archiver. Right-click. Done.</summary>
+    <description>LRGEX Compress is a free, open-source Windows tool that compresses and extracts archives. Built around Zstandard (zstd) for maximum speed. Right-click any folder to compress, right-click any archive to extract. No settings, no nag screens, no compression levels.</description>
+    <tags>compression archive zstd tar zip rar extract compress freeware</tags>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>

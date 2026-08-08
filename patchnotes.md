@@ -1,4 +1,18 @@
-# Patch Notes - Version 1.4.1 - Current
+# Patch Notes - Version 1.4.2 - Current
+
+## 🔧 Machine-Wide Install Support (Chocolatey)
+
+- Installer now uses `{autopf}` + `HKA` (Inno Setup dual-mode). Installs per-user
+  (no admin) OR machine-wide (admin/choco) from the SAME binary.
+- Chocolatey passes `/ALLUSERS` for machine-wide install to `%ProgramFiles%`.
+- Portable download runs per-user to `%LOCALAPPDATA%` as before.
+- All registry keys use `HKA` → HKLM when admin, HKCU when per-user.
+- Added `chocolateyuninstall.ps1` that calls the Inno uninstaller.
+- Added `softwareName` to chocolateyinstall.ps1 for upgrade/uninstall detection.
+
+---
+
+# Patch Notes - Version 1.4.1
 
 ## 🛡️ Data Integrity — Full Metadata Preservation
 
