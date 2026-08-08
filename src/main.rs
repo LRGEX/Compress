@@ -202,6 +202,28 @@ slint::slint! {
     }
 }
 
+fn show_help() {
+    let app = match ErrorWindow::new() {
+        Ok(a) => a,
+        Err(_) => return,
+    };
+    app.set_message(
+        "LRGEX Compress — usage:\n\n\
+         lrgex-compress <folder-or-file>     Compress → <name>.zgx\n\
+         lrgex-compress -x <archive>         Extract → <name>\\ folder\n\
+         lrgex-compress -x -h <archive>      Extract here (into the archive's folder)\n\
+         lrgex-compress --help               Show this help\n\n\
+         Supported formats:\n\
+         • Compress: .zgx (tar + zstd)\n\
+         • Extract:  .zgx, .zip, .rar\n\n\
+         Or right-click any file/folder in Explorer."
+            .into());
+    app.on_close_clicked(|| {
+        let _ = slint::quit_event_loop();
+    });
+    let _ = app.run();
+}
+
 fn show_error(msg: &str) {
     let app = match ErrorWindow::new() {
         Ok(a) => a,
@@ -262,6 +284,13 @@ fn main() {
         crate::extract::ELEVATED_RERUN.store(true, std::sync::atomic::Ordering::Relaxed);
     }
     let args: Vec<String> = args_raw.into_iter().filter(|a| a != "--elevated-rerun").collect();
+
+    // --- HELP path ---
+    if args.len() >= 2 && (args[1] == "--help" || args[1] == "-h" || args[1] == "/?") {
+        show_help();
+        return;
+    }
+
     let is_extract = args.len() >= 3 && args[1] == "-x";
 
     // --- EXTRACT path (no multi-select) ---

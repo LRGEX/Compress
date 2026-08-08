@@ -112,7 +112,8 @@ Direct download: [download.lrgex.com](https://download.lrgex.com/app/rst/lrgex-c
 ```bash
 lrgex-compress <folder-or-file>      # compress -> <name>.zgx
 lrgex-compress -x <archive>.zgx      # extract  -> <name>\ folder
-lrgex-compress -x -h <archive>.zgx   # extract here (into current folder)
+lrgex-compress -x -h <archive>.zgx   # extract here (into the archive's folder)
+lrgex-compress --help                # show usage
 ```
 
 ## Requirements
