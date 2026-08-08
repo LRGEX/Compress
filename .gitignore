@@ -27,3 +27,4 @@ vendor/unrar/data/
 .pi/
 latest.json.sig
 wiki/
+*.nupkg
