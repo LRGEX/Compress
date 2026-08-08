@@ -214,6 +214,29 @@ fn show_error(msg: &str) {
     let _ = app.run();
 }
 
+/// WinRAR-style overwrite confirmation. If the destination archive already exists,
+/// prompt the user before starting compression. Returns true to proceed (overwrite
+/// or no conflict), false to cancel. Only used for COMPRESS — extraction keeps its
+/// existing silent-overwrite behavior.
+fn confirm_overwrite(dest: &std::path::Path) -> bool {
+    if !dest.exists() {
+        return true; // no conflict
+    }
+    let name = dest
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    rfd::MessageDialog::new()
+        .set_title("Confirm Replace")
+        .set_description(&format!(
+            "{} already exists.\n\nDo you want to replace it?",
+            name
+        ))
+        .set_buttons(rfd::MessageButtons::YesNo)
+        .show()
+        == rfd::MessageDialogResult::Yes
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let is_extract = args.len() >= 3 && args[1] == "-x";
@@ -293,6 +316,7 @@ fn main() {
             Some(p) => p.join(format!("{}.zgx", name)),
             None => PathBuf::from(format!("{}.zgx", name)),
         };
+        if !confirm_overwrite(&dest) { return; }
         run_one(op_label, Some(op_detail), true, dest, OpKind::CompressOne(f));
     } else {
         // Multi: archive is named after the shared parent folder, placed in that parent.
@@ -309,6 +333,7 @@ fn main() {
         let op_label = "Compressing".to_string();
         let op_detail = format!("{} ({} items)", label, paths.len());
         let dest = parent.join(format!("{}.zgx", label));
+        if !confirm_overwrite(&dest) { return; }
         run_one(op_label, Some(op_detail), true, dest, OpKind::CompressMany(paths));
     }
 }

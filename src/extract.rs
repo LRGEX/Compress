@@ -16,6 +16,90 @@ use std::path::{Path, PathBuf};
 
 use crate::progress::{self, ByteReader, Progress};
 
+/// Drop guard for an in-flight output file. If the write fails, is cancelled, or the
+/// thread panics, the guard deletes the partial file so a truncated/zero-filled file
+/// never looks complete. Disarmed (forgotten) only after the write + metadata restore
+/// fully succeed. NEVER use this for directories (rmdir would fail non-empty) or for
+/// files we intend to keep.
+struct PartialFile {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl PartialFile {
+    fn new(path: PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+    /// Disarm: call this ONLY after the file is fully written and metadata applied.
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for PartialFile {
+    fn drop(&mut self) {
+        if self.armed {
+            // Best-effort: a failure here (e.g. file already gone) must not mask the
+            // original error that triggered the unwind.
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// Validate a symlink/hardlink TARGET so a crafted archive cannot create a link
+/// pointing outside the destination root. Returns true if the target is safe.
+///
+/// Rules (mirror the entry-name guard + a resolved-path containment check):
+///  - reject absolute paths (e.g. `C:\Windows\...`, `/etc/passwd`)
+///  - reject any component that is not Normal or CurDir (rejects `..` and Windows
+///    drive prefixes like `C:foo` which parse as Prefix)
+///  - additionally resolve the target relative to the link's own directory and
+///    confirm the canonicalized result stays inside `dest_root`
+fn is_safe_link_target(target: &str, link_path: &Path, dest_root: &Path) -> bool {
+    use std::path::Component;
+
+    // Empty target — nothing to link to.
+    if target.is_empty() { return false; }
+
+    let p = std::path::Path::new(target);
+
+    // Reject absolute paths.
+    if p.is_absolute() { return false; }
+
+    // Reject Windows drive-prefix components (e.g. `C:foo` parses as Prefix).
+    // ParentDir (`..`) is ALLOWED here — legit symlinks use it (e.g.
+    // `libfoo.so -> ../lib/libfoo.so.1`). The canonicalization containment
+    // check below is the real authority that catches actual escapes.
+    if p.components().any(|c| matches!(c, std::path::Component::Prefix(_))) {
+        return false;
+    }
+
+    // Resolve the target relative to the link's own directory, then canonicalize the
+    // parent (the link itself doesn't exist yet) and confirm it stays under dest_root.
+    // This catches indirect escapes like `a/../../escape` that survive the component
+    // check because each individual component is Normal.
+    let base = match link_path.parent() {
+        Some(b) => b,
+        None => return false,
+    };
+    let resolved = base.join(p);
+
+    // Canonicalize dest_root (must exist — it's the extract target folder).
+    let canon_root = match dest_root.canonicalize() {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    // Canonicalize the resolved target's parent. The final component may not exist yet
+    // (for symlinks it usually won't), but the parent chain must exist and resolve
+    // inside dest_root.
+    let canon_parent = match resolved.parent().and_then(|p| p.canonicalize().ok()) {
+        Some(c) => c,
+        None => return false,
+    };
+
+    canon_parent.starts_with(&canon_root)
+}
+
 /// Counting reader for zip extraction — ticks decompressed bytes into Progress.
 struct ZipCountingReader<'a, R: std::io::Read> {
     inner: &'a mut R,
@@ -342,10 +426,19 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path) -
             Some(p) => p.install(run_writes),
             None => run_writes(),  // fallback if pool creation failed
         };
+        // On ANY failure in the batch, delete every file we tried to write. Some may
+        // have succeeded and some failed; a partial batch (3 of 5 files written) is
+        // worse than none for a tool promising exact preservation. Best-effort delete.
+        let batch_paths: Vec<PathBuf> = batch.iter().map(|(p, _, _)| p.clone()).collect();
         batch.clear();
         *batch_bytes = 0;
         match errs.into_iter().next() {
-            Some(e) => Err(format!("write batch: {}", e)),
+            Some(e) => {
+                for p in &batch_paths {
+                    let _ = std::fs::remove_file(p);
+                }
+                Err(format!("write batch: {}", e))
+            }
             None => Ok(()),
         }
     };
@@ -420,6 +513,8 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path) -
         if etype.is_hard_link() {
             // Hard links: not currently preserved (rare on Windows; tar hardlink semantics
             // don't map cleanly to NTFS in this extractor). Skip rather than risk corruption.
+            // (If hardlink creation is ever added, the target MUST go through the same
+            // is_safe_link_target validation as symlinks below.)
             continue;
         }
 
@@ -432,6 +527,13 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path) -
                 Ok(Some(t)) => t.to_string_lossy().to_string(),
                 _ => continue, // symlink with no target — can't recreate, skip
             };
+            // Validate the TARGET so a crafted archive can't create a link pointing
+            // outside the destination (zip-slip equivalent for link targets).
+            if !is_safe_link_target(&target, &outpath, dest) {
+                // Skip — do not create the link. The user gets the data files; the
+                // malicious/unsafe link is silently dropped.
+                continue;
+            }
             // Ensure parent dir exists.
             if let Some(parent) = outpath.parent() {
                 if dir_cache.insert(parent.to_path_buf()) {
@@ -512,6 +614,9 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path) -
                 Err(e) => return ZgxOutcome::Failed(format!("create {}: {}", rel.display(), e)),
             };
             let _ = f.set_len(size);
+            // Guard: if the write fails, is cancelled, or the thread panics, delete the
+            // partial file so a truncated/zero-filled file never looks complete.
+            let _guard = PartialFile::new(outpath.clone());
             // Write 4 MB chunks straight from the tar entry to the File — NO BufWriter.
             // The File already hands bytes to the OS page cache; a BufWriter added a
             // redundant user-space copy (entry → 1MB buf → File → OS) and io::copy's
@@ -545,6 +650,7 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path) -
                 crate::metaattr::apply_all_handle(raw, meta.mtime, meta.ctime, meta.attrs & crate::metaattr::PRESERVED_ATTRS);
             }
             drop(f);
+            _guard.disarm(); // write complete + metadata applied — keep the file
             continue;
         }
 
@@ -670,6 +776,11 @@ fn extract_zip(archive: &Path, dest: &Path) -> (bool, String) {
                 let mut counting = ZipCountingReader { inner: &mut entry, prog: &prog };
                 std::io::Read::read_to_end(&mut counting, &mut target).map_err(|e| format!("read link {}: {}", rel.display(), e))?;
                 let target = String::from_utf8_lossy(&target).trim_end_matches(['\0', '\r', '\n']).to_string();
+                // Validate the TARGET so a crafted zip can't create a link pointing
+                // outside the destination.
+                if !is_safe_link_target(&target, &outpath, dest) {
+                    continue; // unsafe target — skip
+                }
                 let _ = std::fs::remove_file(&outpath).or_else(|_| std::fs::remove_dir(&outpath));
                 let is_dir = entry.unix_mode().map(|m| (m & 0o170000) == 0o040000).unwrap_or(false);
                 let r = crate::metaattr::create_symlink(&outpath, &target, is_dir);
@@ -710,6 +821,9 @@ fn extract_zip(archive: &Path, dest: &Path) -> (bool, String) {
                 std::fs::create_dir_all(parent).map_err(|e| format!("mkdir parent: {}", e))?;
             }
             {
+                // Guard: delete the partial file if the write fails or the closure
+                // returns early (the `?` operators below).
+                let _guard = PartialFile::new(outpath.clone());
                 // Write via a handle so we can set times on it before the writer drops.
                 let outf = std::fs::File::create(&outpath).map_err(|e| format!("create {}: {}", rel.display(), e))?;
                 let mut counting = ZipCountingReader { inner: &mut entry, prog: &prog };
@@ -717,6 +831,7 @@ fn extract_zip(archive: &Path, dest: &Path) -> (bool, String) {
                 std::io::copy(&mut counting, &mut bw).map_err(|e| format!("write {}: {}", rel.display(), e))?;
                 drop(bw);
                 drop(outf);
+                _guard.disarm(); // write complete
             }
             // Restore mtime AFTER the write (Windows updates mtime on write).
             if let Some(mt) = mtime {
