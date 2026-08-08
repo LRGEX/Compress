@@ -1,6 +1,13 @@
-# Patch Notes - Version 1.4.2 - Current
+# Patch Notes - Version 1.4.4 - Current
 
-## 🔧 Machine-Wide Install Support (Chocolatey)
+## 🔧 Fixes
+
+- Software renderer only (removes femtovg/OpenGL) — fixes no-UI on VMs without GPU
+- Uninstall icon + installer version info (cosmetic)
+
+---
+
+# Patch Notes - Version 1.4.3
 
 - Installer now uses `{autopf}` + `HKA` (Inno Setup dual-mode). Installs per-user
   (no admin) OR machine-wide (admin/choco) from the SAME binary.

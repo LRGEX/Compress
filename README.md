@@ -11,7 +11,7 @@
   </ul>
 </div>
 
-**Version 1.4.2**
+**Version 1.4.4**
 
 Free, open source, MIT licensed.
 
@@ -86,14 +86,21 @@ Extracts ZIP, RAR, and ZGX archives. You don't need WinRAR or 7-Zip installed.
 
 ## Installation
 
-1. Download the latest `LRGEX-Compress-setup.exe` from [Releases](https://github.com/LRGEX/Compress/releases)
+1. Download the latest `LRGEX-Compress-setup.exe` from [Releases](https://github.com/LRGEX/Compress/releases) or [download.lrgex.com](https://download.lrgex.com/app/rst/lrgex-compress/)
 2. Double-click — installs with no admin prompt
 3. Right-click any file or folder → **LRGEX → Compress**
 
-Or install via winget:
+Or install via Chocolatey:
+```
+choco install lrgex-compress
+```
+
+Or winget (pending):
 ```
 winget install LRGEX.Compress
 ```
+
+Direct download: [download.lrgex.com](https://download.lrgex.com/app/rst/lrgex-compress/)
 
 ---
 
@@ -103,7 +110,6 @@ winget install LRGEX.Compress
 lrgex-compress <folder-or-file>      # compress -> <name>.zgx
 lrgex-compress -x <archive>.zgx      # extract  -> <name>\ folder
 lrgex-compress -x -h <archive>.zgx   # extract here (into current folder)
-lrgex-compress --help                # show usage
 ```
 
 ## Requirements

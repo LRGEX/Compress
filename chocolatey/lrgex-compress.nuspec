@@ -2,7 +2,7 @@
 <package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
   <metadata>
     <id>lrgex-compress</id>
-    <version>1.4.2</version>
+    <version>1.4.4</version>
     <title>LRGEX Compress</title>
     <authors>LRGEX</authors>
     <projectUrl>https://github.com/LRGEX/Compress</projectUrl>

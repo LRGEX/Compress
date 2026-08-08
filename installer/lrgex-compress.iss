@@ -12,7 +12,7 @@
 ; TO COMPILE: "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\lrgex-compress.iss
 
 #define MyAppName      "LRGEX Compress"
-#define MyAppVersion "1.4.2"
+#define MyAppVersion "1.4.4"
 #define MyAppPublisher "LRGEX"
 #define MyAppExeName   "lrgex-compress.exe"
 
@@ -21,6 +21,8 @@ AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 UninstallDisplayName={#MyAppName}
+UninstallDisplayIcon={app}\{#MyAppExeName}
+VersionInfoVersion={#MyAppVersion}.0
 DefaultDirName={autopf}\LRGEX Compress
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
