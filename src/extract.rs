@@ -423,7 +423,9 @@ fn extract_zgx(archive: &Path, dest: &Path) -> (bool, String) {
         }
         ZgxOutcome::ElevatedRelaunched => {
             // We re-launched as admin; the elevated process takes over and writes the
-            // terminal phase. Exit now so the (non-elevated) GUI closes.
+            // terminal phase. Set stop via finish(3) FIRST so the heartbeat writer's
+            // `while !stop` loop exits and join() returns — otherwise join hangs forever.
+            prog.finish(3);
             let _ = heartbeat.join();
             std::process::exit(0);
         }
@@ -494,6 +496,9 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path) -
     // Count symlinks that couldn't be recreated (elevation denied/declined) so we can
     // surface 'Done - N skipped' to the user instead of silently dropping links.
     let mut skipped_links: usize = 0;
+    // Recoverable per-file failures (locked/readonly-after-retry/path issues) —
+    // accumulated from flush_batch, surfaced via set_skipped at the end.
+    let mut skipped_files: usize = 0;
 
     let mut entries = match tar.entries() {
         Ok(e) => e,
@@ -550,8 +555,8 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path) -
 
     let flush_batch = |batch: &mut Vec<(PathBuf, Vec<u8>, EntryMeta)>,
                        batch_bytes: &mut usize,
-                       dir_cache: &mut std::collections::HashSet<PathBuf>| -> Result<(), String> {
-        if batch.is_empty() { return Ok(()); }
+                       dir_cache: &mut std::collections::HashSet<PathBuf>| -> Result<usize, String> {
+        if batch.is_empty() { return Ok(0); }
         // 1. Create parent dirs (sequential, deduped).
         for (path, _, _) in batch.iter() {
             if let Some(parent) = path.parent() {
@@ -587,8 +592,9 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path) -
                     // mtime + ctime survive the rename; attrs applied post-rename below.
                     crate::metaattr::apply_all_handle(raw, meta.mtime, meta.ctime, 0);
                     drop(f);
-                    // Atomic swap: temp → final.
-                    if let Err(e) = std::fs::rename(&tmp, path) {
+                    // Atomic swap: temp → final. atomic_replace clears ReadOnly on an
+                    // existing destination (Windows MoveFileExW trap) before the rename.
+                    if let Err(e) = crate::metaattr::atomic_replace(&tmp, path) {
                         let _ = std::fs::remove_file(&tmp);
                         return Some((path.clone(), e));
                     }
@@ -611,18 +617,35 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path) -
         batch.clear();
         *batch_bytes = 0;
         if errs.is_empty() {
-            Ok(())
+            Ok(0)
         } else {
-            // Write a manifest of ALL failed files (not just the first) so the user
-            // knows exactly what didn't extract.
-            let manifest = std::env::temp_dir().join(format!("lrgex-extract-failed-{}.txt", std::process::id()));
-            let err_count = errs.len();
-            let body: String = errs.iter()
-                .map(|(p, e)| format!("{}: {}", p.display(), e))
-                .collect::<Vec<_>>().join("\n");
-            let _ = std::fs::write(&manifest, body);
-            let first = errs.into_iter().next().unwrap();
-            Err(format!("write batch: {} ({} files failed — see {})", first.1, err_count, manifest.display()))
+            // Split FATAL (disk-full during temp WRITE — systemic, continuing would
+            // mask it as '2000 files skipped') from RECOVERABLE (access-denied, locked,
+            // path issues — skip the one file, continue the batch, WinRAR-style).
+            // ERROR_DISK_FULL=112, ERROR_HANDLE_DISK_FULL=39.
+            let mut fatal: Option<String> = None;
+            let mut recoverable: Vec<(PathBuf, std::io::Error)> = Vec::new();
+            for (p, e) in errs {
+                let code = e.raw_os_error().unwrap_or(0);
+                if code == 112 || code == 39 || e.kind() == std::io::ErrorKind::StorageFull {
+                    fatal = Some(format!("write {}: {} (disk full — aborting)", p.display(), e));
+                    break;
+                }
+                recoverable.push((p, e));
+            }
+            if let Some(f) = fatal {
+                return Err(f);
+            }
+            // Recoverable: write a manifest of skipped files, return the count (not an
+            // error — the caller accumulates it into the 'skipped' total and continues).
+            if !recoverable.is_empty() {
+                let manifest = std::env::temp_dir().join(format!("lrgex-extract-failed-{}.txt", std::process::id()));
+                let body: String = recoverable.iter()
+                    .map(|(p, e)| format!("{}: {}", p.display(), e))
+                    .collect::<Vec<_>>().join("\n");
+                let _ = std::fs::write(&manifest, body);
+            }
+            Ok(recoverable.len())
         }
     };
 
@@ -703,8 +726,9 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path) -
 
         if etype.is_symlink() {
             // Flush any pending files first (they may be the link's siblings).
-            if let Err(e) = flush_batch(&mut batch, &mut batch_bytes, &mut dir_cache) {
-                return ZgxOutcome::Failed(e);
+            match flush_batch(&mut batch, &mut batch_bytes, &mut dir_cache) {
+                Err(e) => return ZgxOutcome::Failed(e),
+                Ok(n) => skipped_files += n,
             }
             let target = match entry.link_name() {
                 Ok(Some(t)) => t.to_string_lossy().to_string(),
@@ -789,8 +813,9 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path) -
 
         if size > STREAM_THRESHOLD {
             // Large file: stream straight to disk, then restore metadata on the path.
-            if let Err(e) = flush_batch(&mut batch, &mut batch_bytes, &mut dir_cache) {
-                return ZgxOutcome::Failed(e);
+            match flush_batch(&mut batch, &mut batch_bytes, &mut dir_cache) {
+                Err(e) => return ZgxOutcome::Failed(e),
+                Ok(n) => skipped_files += n,
             }
             if let Some(parent) = outpath.parent() {
                 if dir_cache.insert(parent.to_path_buf()) {
@@ -853,7 +878,7 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path) -
             }
             drop(f);
             // Atomic swap: temp → final. This is the ONLY point the final path is touched.
-            if let Err(e) = std::fs::rename(&tmp, &outpath) {
+            if let Err(e) = crate::metaattr::atomic_replace(&tmp, &outpath) {
                 let _ = std::fs::remove_file(&tmp);
                 return ZgxOutcome::Failed(format!("rename {}: {}", rel.display(), e));
             }
@@ -873,15 +898,17 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path) -
         batch.push((outpath, data, meta));
 
         if batch.len() >= BATCH_ENTRIES || batch_bytes >= BATCH_BYTES {
-            if let Err(e) = flush_batch(&mut batch, &mut batch_bytes, &mut dir_cache) {
-                return ZgxOutcome::Failed(e);
+            match flush_batch(&mut batch, &mut batch_bytes, &mut dir_cache) {
+                Err(e) => return ZgxOutcome::Failed(e),
+                Ok(n) => skipped_files += n,
             }
         }
     }
 
     // Flush remaining small files.
-    if let Err(e) = flush_batch(&mut batch, &mut batch_bytes, &mut dir_cache) {
-        return ZgxOutcome::Failed(e);
+    match flush_batch(&mut batch, &mut batch_bytes, &mut dir_cache) {
+        Err(e) => return ZgxOutcome::Failed(e),
+        Ok(n) => skipped_files += n,
     }
 
     // FINAL pass: restore directory mtime/ctime/attrs AFTER all children written.
@@ -912,7 +939,7 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path) -
         // with the caveat that links were skipped.
     }
 
-    ZgxOutcome::Done(skipped_links)
+    ZgxOutcome::Done(skipped_links + skipped_files)
 }
 
 /// Convert a zip crate DateTime (DOS datetime: year/month/day + hour/min/sec) to
@@ -1063,7 +1090,7 @@ fn extract_zip(archive: &Path, dest: &Path) -> (bool, String) {
                     return Err(e);
                 }
                 // Atomic swap: temp → final.
-                if let Err(e) = std::fs::rename(&tmp, &outpath) {
+                if let Err(e) = crate::metaattr::atomic_replace(&tmp, &outpath) {
                     let _ = std::fs::remove_file(&tmp);
                     return Err(format!("rename {}: {}", rel.display(), e));
                 }
@@ -1134,7 +1161,7 @@ fn move_dir_contents(src: &Path, dst: &Path) -> std::io::Result<()> {
             let _ = std::fs::remove_dir(&from); // remove now-empty dir
         } else {
             // rename overwrites on Windows. Same volume = atomic.
-            std::fs::rename(&from, &to)?;
+            crate::metaattr::atomic_replace(&from, &to)?;
         }
     }
     Ok(())

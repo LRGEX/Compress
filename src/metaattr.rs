@@ -21,6 +21,55 @@
 // latched — we never ask twice in one run.
 
 use std::path::Path;
+
+/// Atomic overwrite-rename that handles the Windows ReadOnly-destination trap.
+/// Rust's `std::fs::rename` on Windows calls `MoveFileExW(MOVEFILE_REPLACE_EXISTING)`,
+/// which FAILS with ERROR_ACCESS_DENIED when the destination has the ReadOnly
+/// attribute set — even though we're replacing it. We try the rename; on access-denied,
+/// clear ReadOnly on the EXISTING destination and retry once. Best-effort: any other
+/// error (locked, perms, ENOSPC) propagates to the caller.
+///
+/// Returns Ok(()) on success, or the original rename error if the retry also fails.
+pub fn atomic_replace(tmp: &Path, dst: &Path) -> std::io::Result<()> {
+    match std::fs::rename(tmp, dst) {
+        Ok(()) => Ok(()),
+        Err(first_err) => {
+            // Only retry on access-denied (the ReadOnly case). Other errors (ENOSPC,
+            // ENOENT, EBUSY) won't be fixed by clearing attrs and should propagate.
+            if first_err.raw_os_error() != Some(5) {
+                return Err(first_err);
+            }
+            // Clear ReadOnly on the existing dst, then retry.
+            clear_readonly_attr(dst);
+            match std::fs::rename(tmp, dst) {
+                Ok(()) => Ok(()),
+                Err(second_err) => {
+                    // Retry failed — report the original access-denied (more useful than
+                    // whatever the second attempt produced).
+                    Err(first_err)
+                }
+            }
+        }
+    }
+}
+
+/// Clear the FILE_ATTRIBUTE_READONLY bit on an existing path. Best-effort — ignores
+/// failure (the caller's rename will surface the real error if attrs weren't the issue).
+fn clear_readonly_attr(path: &Path) {
+    let wide = match path_to_wide(path) {
+        Some(w) => w,
+        None => return,
+    };
+    unsafe {
+        let cur = GetFileAttributesW(wide.as_ptr());
+        if cur == 0xFFFFFFFF {
+            return; // doesn't exist / unreadable
+        }
+        if cur & ATTR_READONLY != 0 {
+            let _ = SetFileAttributesW(wide.as_ptr(), (cur & !ATTR_READONLY) as FILE_FLAGS_AND_ATTRIBUTES);
+        }
+    }
+}
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use windows_sys::Win32::Foundation::{FILETIME, HANDLE, INVALID_HANDLE_VALUE};

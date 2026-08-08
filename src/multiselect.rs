@@ -31,9 +31,9 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, HANDLE, STILL_ACTIVE, WAIT_ABANDONED, WAIT_OBJECT_0},
+    Foundation::{CloseHandle, HANDLE, WAIT_ABANDONED, WAIT_OBJECT_0},
     System::Threading::{
-        CreateMutexExW, GetExitCodeProcess, OpenProcess, ReleaseMutex, WaitForSingleObject,
+        CreateMutexExW, OpenProcess, ReleaseMutex, WaitForSingleObject,
         PROCESS_QUERY_LIMITED_INFORMATION,
     },
 };
