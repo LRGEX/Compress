@@ -4,9 +4,9 @@
 ; while the portable download runs per-user with no UAC. Right-click only - no Start Menu.
 ;
 ; ONE cascading right-click entry ("LRGEX"):
-;   right-click a FOLDER -> "LRGEX" -> hover -> "Compress"  -> folder.zgx
-;   right-click any FILE  -> "LRGEX" -> hover -> "Compress"  -> file.zgx
-;   right-click a .zgx    -> "LRGEX" -> hover -> "Extract"   -> <name>\ folder
+;   right-click a FOLDER -> "LRGEX" -> hover -> "Compress" / "Split Compress" -> folder.zgx
+;   right-click any FILE  -> "LRGEX" -> hover -> "Compress"                  -> file.zgx
+;   right-click a .zgx    -> "LRGEX" -> hover -> "Extract"                    -> <name>\ folder
 ;   (double-click a .zgx also extracts)
 ;
 ; TO COMPILE: "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\lrgex-compress.iss
@@ -49,7 +49,7 @@ Source: "..\assets\icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 Root: HKA; Subkey: "Software\Classes\Directory\ContextMenus\LRGEX"; Flags: uninsdeletekey
 Root: HKA; Subkey: "Software\Classes\*\ContextMenus\LRGEX"; Flags: uninsdeletekey
 
-; ===== FOLDER: cascade "LRGEX" -> hover -> "Compress" =====
+; ===== FOLDER: cascade "LRGEX" -> hover -> "Compress" + "Split Compress" =====
 Root: HKA; Subkey: "Software\Classes\Directory\shell\LRGEX"; \
     ValueType: string; ValueName: ""; ValueData: "LRGEX"; Flags: uninsdeletekey
 Root: HKA; Subkey: "Software\Classes\Directory\shell\LRGEX"; \
@@ -72,6 +72,7 @@ Root: HKA; Subkey: "Software\Classes\Directory\ContextMenus\LRGEX\shell\splitcom
     ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" --split ""%1"""
 
 ; ===== FILES (all): cascade "LRGEX" -> hover -> "Compress" =====
+; (Split Compress is NOT on files — only on folders/Directories.)
 Root: HKA; Subkey: "Software\Classes\*\shell\LRGEX"; \
     ValueType: string; ValueName: ""; ValueData: "LRGEX"; Flags: uninsdeletekey
 Root: HKA; Subkey: "Software\Classes\*\shell\LRGEX"; \
@@ -86,12 +87,6 @@ Root: HKA; Subkey: "Software\Classes\*\ContextMenus\LRGEX\shell\compress"; \
     ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName},0"
 Root: HKA; Subkey: "Software\Classes\*\ContextMenus\LRGEX\shell\compress\command"; \
     ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""
-Root: HKA; Subkey: "Software\Classes\*\ContextMenus\LRGEX\shell\splitcompress"; \
-    ValueType: string; ValueName: ""; ValueData: "Split Compress"; Flags: uninsdeletekey
-Root: HKA; Subkey: "Software\Classes\*\ContextMenus\LRGEX\shell\splitcompress"; \
-    ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName},0"
-Root: HKA; Subkey: "Software\Classes\*\ContextMenus\LRGEX\shell\splitcompress\command"; \
-    ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" --split ""%1"""
 
 ; ===== .zgx: cascade "LRGEX" -> hover -> "Extract" (+ double-click = extract) =====
 Root: HKA; Subkey: "Software\Classes\.zgx"; \
