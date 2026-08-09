@@ -9,6 +9,7 @@
       <h1>Compress</h1>
     </summary>
   </ul>
+  Speed up your Workflow... Download LRGEX Compress
 </div>
 
 **Version 1.4.5**
