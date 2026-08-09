@@ -1,17 +1,18 @@
-# Patch Notes - Version 1.5.0 - Current
+# Patch Notes - Version 1.5.1 - Current
 
-## ✨ New Feature: Split Compress
+## 🚀 New Features
 
-- Right-click any folder → LRGEX → Split Compress
-- Choose segment size in MB (quick picks: 50, 100, 700, 4G)
-- Produces `MyFolder.part001.zgx`, `.part002.zgx`, etc.
-- Each part has a SHA256 trailer for integrity verification
-- Extract ANY part → auto-detects and extracts the full archive
-- Corrupt part → clear error naming which part to redownload
-- CLI: `--split [--size <MB>] <folder>`
+- **Split Compress**: right-click any folder → LRGEX → Split Compress
+  - Choose segment size in MB (quick picks: 50, 100, 700, 4G)
+  - Produces `MyFolder.part001.zgx`, `.part002.zgx`, etc.
+  - Each part has a SHA256 trailer for integrity verification
+  - Extract ANY part → auto-detects and extracts the full archive
+  - Corrupt part → clear error naming which part to redownload
+  - CLI: `--split [--size <MB>] <folder>`
 
 ## 🔧 Fixes
 
+- Auto-update fix: write-lock released before launching installer
 - Truncation check now allows 64KB slack for zstd/tar trailing buffers
 - Part discovery uses globbing (survives user renaming of parts)
 - Contiguity check: missing middle part detected before extraction
@@ -27,8 +28,6 @@
 - `--help` flag added
 
 ---
-
-# Patch Notes - Version 1.4.5
 
 # Patch Notes - Version 1.4.4
 

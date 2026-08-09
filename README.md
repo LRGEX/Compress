@@ -12,7 +12,7 @@
   </ul>
 </div>
 
-**Version 1.5.0**
+**Version 1.5.1**
 
 Free, open source, MIT licensed.
 
