@@ -274,7 +274,68 @@ fn confirm_extract_overwrite(dest_name: &str) -> bool {
         == rfd::MessageDialogResult::Yes
 }
 
+/// Guard so the VEH logs exactly once (no recursion on re-entry).
+static CRASH_LOGGED: AtomicBool = AtomicBool::new(false);
+
+/// Install a vectored exception handler that catches ACCESS_VIOLATION (0xC0000005)
+/// and other hardware exceptions. Rust panic hooks do NOT catch these. Writes a
+/// detailed crash log with a full backtrace to %LOCALAPPDATA%\LRGEX Compress\crash-log.txt
+/// so no crash is ever silent.
+fn install_crash_handler() {
+    use windows_sys::Win32::System::Diagnostics::Debug::{
+        AddVectoredExceptionHandler, EXCEPTION_CONTINUE_SEARCH,
+        EXCEPTION_POINTERS,
+    };
+    use windows_sys::Win32::Foundation::EXCEPTION_ACCESS_VIOLATION;
+    unsafe extern "system" fn handler(except_info: *mut EXCEPTION_POINTERS) -> i32 {
+        if CRASH_LOGGED.swap(true, Ordering::SeqCst) {
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
+        if except_info.is_null() { return EXCEPTION_CONTINUE_SEARCH; }
+        let record = (*except_info).ExceptionRecord;
+        if record.is_null() { return EXCEPTION_CONTINUE_SEARCH; }
+        let code = (*record).ExceptionCode;
+        let fault_addr = (*record).ExceptionAddress as usize;
+        let info = (*record).ExceptionInformation;
+        let access_type = if info.len() > 0 { info[0] } else { 0 };
+        let bad_addr = if info.len() > 1 { info[1] } else { 0 };
+        let tid = windows_sys::Win32::System::Threading::GetCurrentThreadId();
+        let module_base = windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(std::ptr::null()) as usize;
+        let rva = fault_addr.wrapping_sub(module_base);
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs()).unwrap_or(0);
+        let exe = std::env::current_exe()
+            .map(|e| e.display().to_string())
+            .unwrap_or_else(|_| "unknown".to_string());
+        // Capture a full backtrace — the faulting thread's stack is still intact.
+        // dbghelp resolves symbols via the PDB (must be next to the exe).
+        let bt = backtrace::Backtrace::new();
+        let access_name = if access_type == 0 { "read" } else if access_type == 1 { "write" } else { "exec" };
+        let log = format!(
+            "LRGEX Compress CRASH\nTime(epoch): {}\nException: 0x{:08X} {}\nFault RVA: 0x{:X}\nFault addr: 0x{:016X}\nAccess: {} address 0x{:016X}\nThread: {}\nExe: {}\nVersion: {}\nArgs: {:?}\n\n=== BACKTRACE ===\n{:?}\n",
+            timestamp, code as u32,
+            if code == EXCEPTION_ACCESS_VIOLATION { "ACCESS_VIOLATION" } else { "OTHER" },
+            rva, fault_addr, access_name, bad_addr,
+            tid, exe, env!("CARGO_PKG_VERSION"),
+            std::env::args().collect::<Vec<_>>(), bt,
+        );
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            let dir = std::path::PathBuf::from(local).join("LRGEX Compress");
+            let _ = std::fs::create_dir_all(&dir);
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("crash-log.txt")) {
+                let _ = f.write_all(log.as_bytes());
+                let _ = f.write_all(b"\n---\n\n");
+            }
+        }
+        EXCEPTION_CONTINUE_SEARCH
+    }
+    unsafe { AddVectoredExceptionHandler(1, Some(handler)); }
+}
+
 fn main() {
+    install_crash_handler();
     let args_raw: Vec<String> = std::env::args().collect();
     // Detect and strip the internal `--elevated-rerun` sentinel (set by symlink-elevation
     // relaunch). When present, extract skips regular files that already exist and only
@@ -433,6 +494,9 @@ fn run_one(op_label: String, op_detail: Option<String>, cancellable: bool, dest:
     // Run the operation in a background thread; the timer reads the heartbeat file.
     let cancel_for_thread = cancel.clone();
     let op_handle = std::thread::spawn(move || {
+        // Catch panics so a thread panic surfaces as a graceful error instead of
+        // silently killing the worker thread (which would leave the GUI hanging).
+        let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let result = match op {
             OpKind::Extract(a) => extract::extract_archive(&a, &dest),
             OpKind::CompressOne(f) => {
@@ -443,6 +507,17 @@ fn run_one(op_label: String, op_detail: Option<String>, cancellable: bool, dest:
                 let label = dest.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
                 let r = compress::compress_paths(&inputs, &dest, &label, &cancel_for_thread);
                 (r.0, if r.1.is_empty() { String::new() } else { r.1.join(", ") })
+            }
+        };
+        result
+        })); // end catch_unwind
+        let result = match panic_result {
+            Ok(r) => r,
+            Err(panic) => {
+                let msg = if let Some(s) = panic.downcast_ref::<&str>() { s.to_string() }
+                    else if let Some(s) = panic.downcast_ref::<String>() { s.clone() }
+                    else { "unknown panic".to_string() };
+                (false, format!("panic: {}", msg))
             }
         };
         // If the operation failed without writing a terminal phase to the status file

@@ -525,11 +525,14 @@ impl<M: ProcessMode> Internal<M> {
         let user_data = unsafe { &mut *(user_data as *mut Userdata<M::Output>) };
         match msg {
             native::UCM_CHANGEVOLUMEW => {
-                // 2048 seems to be the buffer size in unrar,
-                // also it's the maximum path length since 5.00.
-                let next =
-                    unsafe { widestring::WideCString::from_ptr_truncate(p1 as *const _, 2048) };
-                user_data.1 = Some(next);
+                // LRGEX FIX: the original code calls WideCString::from_ptr_truncate(p1, 2048)
+                // to capture the next-volume path into user_data.1 — but user_data.1 is
+                // NEVER read anywhere. The call is pure overhead AND it crashes on
+                // multi-volume RARs: during volume transitions (DllVolNotify/MergeArchive),
+                // p1 can point to freed/invalid memory, and from_ptr_truncate's memcpy
+                // reads into unmapped pages → ACCESS_VIOLATION. Since we don't use the
+                // path, skip the read entirely. unrar finds volumes itself via the
+                // archive's internal naming.
                 match p2 {
                     // Next volume not found. -1 means stop
                     native::RAR_VOL_ASK => -1,
