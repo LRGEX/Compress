@@ -547,139 +547,9 @@ pub fn compress_paths(
     let _ = header_writer.write_all(b"LRGEX\x01");
     let _ = header_writer.write_all(&total_bytes.to_le_bytes());
 
-    let mut encoder = match zstd::Encoder::new(header_writer, 1) {
-        Ok(e) => e,
-        Err(_) => {
-            progress.finish(4);
-            let _ = heartbeat.join();
-            let _ = std::fs::remove_file(&part);
-            return (false, vec![]);
-        }
-    };
-    let threads = std::thread::available_parallelism().map(|n| n.get() as u32).unwrap_or(4);
-    let _ = encoder.multithread(threads);
-    let _ = encoder.include_checksum(false);
-    use zstd::stream::raw::CParameter;
-    let _ = encoder.set_parameter(CParameter::JobSize(16 * 1024 * 1024));
-    let _ = encoder.set_parameter(CParameter::OverlapSizeLog(0));
-    let mut builder = tar::Builder::new(encoder.auto_finish());
+    // Run the ONE engine (compress_into). Replaces the old inline encoder loop.
+    let (ok, skipped) = compress_into(&files, header_writer, cancel, &progress);
 
-    // Write the metadata sidecar as the FIRST entry. See build_sidecar / SIDECAR_PATH.
-    let _ = write_sidecar(&mut builder, &files);
-
-    let mut skipped: Vec<String> = Vec::new();
-    let mut cancelled = false;
-
-    for batch in files.chunks(BATCH) {
-        if cancel.load(Ordering::Relaxed) {
-            cancelled = true;
-            break;
-        }
-        let loaded: Vec<Option<std::io::Result<Vec<u8>>>> = batch
-            .par_iter()
-            .map(|e| {
-                match e.kind {
-                    EntKind::File if e.size <= BIG_FILE => {
-                        let r = read_whole(&e.path, e.size);
-                        progress.tick_bytes(e.size);
-                        Some(r)
-                    }
-                    _ => None,
-                }
-            })
-            .collect();
-
-        for (e, data) in batch.iter().zip(loaded.into_iter()) {
-            if cancel.load(Ordering::Relaxed) {
-                cancelled = true;
-                break;
-            }
-            let res: std::io::Result<()> = match &e.kind {
-                EntKind::Symlink { target } => {
-                    // (ctime + attrs come from the sidecar — no PAX here.)
-                    let mut h = tar::Header::new_gnu();
-                    h.set_entry_type(tar::EntryType::Symlink);
-                    h.set_size(0);
-                    h.set_mode(0o777);
-                    h.set_uid(0);
-                    h.set_gid(0);
-                    h.set_mtime(e.meta.mtime);
-                    if let Err(e) = h.set_link_name(target) {
-                        Err(e) // target unrepresentable → entry goes to skipped list
-                    } else {
-                        h.set_cksum();
-                        builder.append_data(&mut h, &e.rel, std::io::empty())
-                    }
-                }
-                EntKind::Dir => {
-                    // (ctime + attrs come from the sidecar — no PAX here.)
-                    let mut h = tar::Header::new_gnu();
-                    h.set_entry_type(tar::EntryType::Directory);
-                    h.set_size(0);
-                    h.set_mode(0o755);
-                    h.set_uid(0);
-                    h.set_gid(0);
-                    h.set_mtime(e.meta.mtime);
-                    h.set_cksum();
-                    let dir_name = format!("{}/", e.rel.to_string_lossy().replace('\\', "/"));
-                    builder.append_data(&mut h, dir_name, std::io::empty())
-                }
-                EntKind::File => {
-                    // (ctime + attrs come from the sidecar — no PAX here.)
-                    match data {
-                        Some(Ok(buf)) => {
-                            let mut h = make_header(buf.len() as u64, e.meta.mtime, 0o644);
-                            let mut slice: &[u8] = buf.as_slice();
-                            builder.append_data(&mut h, &e.rel, &mut slice)
-                        }
-                        Some(Err(err)) => Err(err),
-                        None => match std::fs::File::open(&e.path) {
-                            Ok(f) => match f.metadata() {
-                                Ok(m) => {
-                                    let mut h = make_header(m.len(), e.meta.mtime, 0o644);
-                                    let br = ByteReader::with_cancel(f, progress.clone(), cancel);
-                                    let mut buf = std::io::BufReader::with_capacity(4 * 1024 * 1024, br);
-                                    builder.append_data(&mut h, &e.rel, &mut buf)
-                                }
-                                Err(err) => Err(err),
-                            },
-                            Err(err) => Err(err),
-                        },
-                    }
-                }
-            };
-            if let Err(_err) = &res {
-                if cancel.load(Ordering::Relaxed) {
-                    cancelled = true;
-                } else {
-                    skipped.push(e.path.to_string_lossy().to_string());
-                }
-            }
-        }
-        if cancelled {
-            break;
-        }
-    }
-
-    if cancelled {
-        drop(builder);
-        let _ = std::fs::remove_file(&part);
-        progress.finish(5);
-        let _ = heartbeat.join();
-        return (false, skipped);
-    }
-
-    progress.set_phase(2);
-    let mut ok = builder.finish().is_ok();
-    match builder.into_inner() {
-        Ok(mut enc) => {
-            if enc.flush().is_err() {
-                ok = false;
-            }
-        }
-        Err(_) => ok = false,
-    }
-    progress.set_skipped(skipped.len());
     let success = if ok {
         crate::metaattr::atomic_replace(&part, dest).is_ok()
     } else {
@@ -688,13 +558,11 @@ pub fn compress_paths(
     };
     let sidecar = format!("{}.skipped.txt", dest.display());
     if success {
-        if skipped.is_empty() {
-            let _ = std::fs::remove_file(&sidecar);
-        } else {
-            let _ = std::fs::write(&sidecar, skipped.join("\r\n"));
-        }
+        if skipped.is_empty() { let _ = std::fs::remove_file(&sidecar); }
+        else { let _ = std::fs::write(&sidecar, skipped.join("\r\n")); }
     }
-    progress.finish(if success { 3 } else { 4 });
+    let phase = if success { 3 } else if cancel.load(Ordering::Relaxed) { 5 } else { 4 };
+    progress.finish(phase);
     let _ = heartbeat.join();
     (success, skipped)
 }
