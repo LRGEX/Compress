@@ -1,7 +1,8 @@
 <div align="center">
-  <img src="https://download.lrgex.com/Dark%20Full%20Logo.png" alt="LRGEX Logo" width="300">
-  <br><br>
   <img src="assets/logo.png" alt="Compress Logo" width="80">
+  <br><br>
+  
+  <img src="https://download.lrgex.com/Dark%20Full%20Logo.png" alt="LRGEX Logo" width="300">
 
 <div id="toc">
   <ul style="list-style: none">
