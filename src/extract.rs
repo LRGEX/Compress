@@ -1086,9 +1086,12 @@ fn extract_split_zgx(archive: &Path, dest: &Path) -> (bool, String) {
         ZgxOutcome::Done(skipped) => {
             if skipped > 0 { prog.set_skipped(skipped); }
             // N-7: verify decompressed total matches header (catches silent truncation).
+            // Finding B fix: allow 64KB slack for zstd/tar trailing buffered bytes
+            // that tar's EOF stops pulling before ByteReader ticks them.
             if header_total > 0 {
                 let decompressed = prog.bytes_done();
-                if decompressed < header_total {
+                let slack = 64 * 1024;
+                if decompressed + slack < header_total {
                     prog.finish(3);
                     let _ = heartbeat.join();
                     return (true, format!(

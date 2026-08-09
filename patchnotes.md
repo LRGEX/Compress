@@ -1,18 +1,34 @@
-# Patch Notes - Version 1.4.5 - Current
+# Patch Notes - Version 1.5.0 - Current
+
+## ✨ New Feature: Split Compress
+
+- Right-click any folder → LRGEX → Split Compress
+- Choose segment size in MB (quick picks: 50, 100, 700, 4G)
+- Produces `MyFolder.part001.zgx`, `.part002.zgx`, etc.
+- Each part has a SHA256 trailer for integrity verification
+- Extract ANY part → auto-detects and extracts the full archive
+- Corrupt part → clear error naming which part to redownload
+- CLI: `--split [--size <MB>] <folder>`
 
 ## 🔧 Fixes
 
+- Truncation check now allows 64KB slack for zstd/tar trailing buffers
+- Part discovery uses globbing (survives user renaming of parts)
+- Contiguity check: missing middle part detected before extraction
+- MAX_PARTS lowered to 1000 (bounds resource usage)
 - Overwrite confirmation prompts added for both compression and extraction
-- Partial files are now cleaned up if extraction fails or is cancelled
-- Symlink targets inside archives are validated before extraction
-- Auto-update now works for all install types (per-user, Program Files, choco, GitHub)
-- Read-only files no longer block overwrite (atomic rename clears the attribute)
-- Extraction continues past locked files instead of aborting the whole archive
-- Skipped files are listed in a .lrgex-skipped.txt next to the destination
-- Archive bit and other Windows attributes preserved exactly on round-trip
-- Temp files use unique names to prevent collisions between same-name files
+- Partial files cleaned up if extraction fails or is cancelled
+- Symlink targets inside archives validated before extraction
+- Auto-update now works for all install types
+- Read-only files no longer block overwrite
+- Extraction continues past locked files
+- Multi-volume RAR crash fixed (unrar callback)
+- Crash handler added (VEH writes backtrace to crash-log.txt)
+- `--help` flag added
 
 ---
+
+# Patch Notes - Version 1.4.5
 
 # Patch Notes - Version 1.4.4
 

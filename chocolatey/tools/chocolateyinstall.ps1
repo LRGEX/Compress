@@ -8,8 +8,8 @@ if (-not [Environment]::Is64BitOperatingSystem) {
 $packageArgs = @{
   packageName    = 'lrgex-compress'
   fileType       = 'exe'
-  url64bit       = 'https://download.lrgex.com/app/rst/lrgex-compress/LRGEX-Compress-v1.4.5-setup.exe'
-  checksum64     = 'b612fc3a50cd9da34964c9b0f973bd3ee4a9d1acbb9398268848fa677e134678'
+  url64bit       = 'https://download.lrgex.com/app/rst/lrgex-compress/LRGEX-Compress-v1.5.0-setup.exe'
+  checksum64     = 'TBD-AFTER-DEPLOY'
   checksumType64 = 'sha256'
   softwareName   = 'LRGEX Compress*'
   silentArgs     = '/VERYSILENT /NORESTART /NOCANCEL /SP- /ALLUSERS'

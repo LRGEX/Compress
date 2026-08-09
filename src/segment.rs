@@ -11,7 +11,7 @@ use sha2::{Sha256, Digest};
 pub const SPLIT_HEADER_LEN: usize = 22;
 pub const SPLIT_VERSION: u8 = 0x02;
 pub const TRAILER_LEN: usize = 32;
-pub const MAX_PARTS: usize = 9999;
+pub const MAX_PARTS: usize = 1000;
 
 // ─── HEADER ───────────────────────────────────────────────────────────
 
@@ -209,6 +209,43 @@ impl Drop for SegmentWriter {
 
 /// Chains multiple part files into one stream. Skips part001's header.
 /// Stops before each part's 32-byte trailer.
+/// Discover all split parts in a directory by globbing, not by constructing fixed-width names.
+/// Returns sorted Vec<PathBuf> (part001, part002, ...). Accepts 1-4 digit part numbers.
+/// Finding D fix: survives user renaming (part1.zgx → still found).
+/// Contiguity check: caller verifies no gaps after calling this.
+fn discover_parts(parent: &Path, stem: &str) -> io::Result<Vec<PathBuf>> {
+    let mut found: Vec<(u32, PathBuf)> = Vec::new();
+    let prefix = format!("{}.", stem);
+    if let Ok(entries) = std::fs::read_dir(parent) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Some(fname) = path.file_name().and_then(|n| n.to_str()) {
+                if !fname.starts_with(&prefix) || !fname.ends_with(".zgx") { continue; }
+                let rest = &fname[prefix.len()..]; // "partNNN.zgx"
+                if let Some(digits) = rest.strip_prefix("part").and_then(|s| s.strip_suffix(".zgx")) {
+                    if !digits.is_empty() && digits.len() <= 4 {
+                        if let Ok(num) = digits.parse::<u32>() {
+                            if num > 0 && num as usize <= MAX_PARTS {
+                                found.push((num, path));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    found.sort_by_key(|(num, _)| *num);
+    // Contiguity check: no gaps allowed.
+    for (idx, (num, _)) in found.iter().enumerate() {
+        let expected = idx as u32 + 1;
+        if *num != expected {
+            return Err(io::Error::new(io::ErrorKind::NotFound,
+                format!("Part {:03} is missing", expected)));
+        }
+    }
+    Ok(found.into_iter().map(|(_, p)| p).collect())
+}
+
 #[derive(Debug)]
 pub struct ConcatReader {
     parts: Vec<PartEntry>,
@@ -235,26 +272,22 @@ impl ConcatReader {
         let mut total_uncompressed: u64 = 0;
         let mut data_sum: u64 = 0;
 
-        for i in 1..=MAX_PARTS {
-            let path = parent.join(format!("{}.part{:03}.zgx", stem, i));
-            if !path.exists() {
-                if i == 1 {
-                    return Err(io::Error::new(io::ErrorKind::NotFound,
-                        format!("Part 001 not found: {}", path.display())));
-                }
-                break;
-            }
+        // Finding D fix: glob for parts instead of hardcoding 3-digit names.
+        let part_files = discover_parts(parent, stem)?;
 
-            let meta = std::fs::metadata(&path)?;
+        for (i, path) in part_files.iter().enumerate() {
+            let part_num = i + 1;
+
+            let meta = std::fs::metadata(path)?;
             if (meta.len() as usize) < TRAILER_LEN {
                 return Err(io::Error::new(io::ErrorKind::InvalidData,
-                    format!("Part {:03} too small", i)));
+                    format!("Part {:03} too small", part_num)));
             }
             let data_len = meta.len() - TRAILER_LEN as u64;
             data_sum += data_len;
 
             // Single-open: seek to trailer, read, seek back, hash, keep handle.
-            let mut f = File::open(&path)?;
+            let mut f = File::open(path)?;
 
             // Read trailer.
             let mut trailer = [0u8; TRAILER_LEN];
@@ -269,11 +302,11 @@ impl ConcatReader {
             let computed = hasher.finalize();
             if computed.as_slice() != trailer {
                 return Err(io::Error::new(io::ErrorKind::InvalidData,
-                    format!("Part {:03} is corrupt (SHA256 mismatch). Redownload it.", i)));
+                    format!("Part {:03} is corrupt (SHA256 mismatch). Redownload it.", part_num)));
             }
 
             // Read part001 header.
-            if i == 1 {
+            if part_num == 1 {
                 f.seek(SeekFrom::Start(0))?;
                 let mut header = [0u8; SPLIT_HEADER_LEN];
                 f.read_exact(&mut header)?;
@@ -306,18 +339,14 @@ impl ConcatReader {
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "bad base path"))?;
         let parent = base_path.parent().unwrap_or(Path::new("."));
         let mut parts: Vec<PartEntry> = Vec::new();
-        for i in 1..=MAX_PARTS {
-            let path = parent.join(format!("{}.part{:03}.zgx", stem, i));
-            if !path.exists() {
-                if i == 1 { return Err(io::Error::new(io::ErrorKind::NotFound, "Part 001 not found")); }
-                break;
-            }
-            let meta = std::fs::metadata(&path)?;
+        let part_files = discover_parts(parent, stem)?;
+        for path in &part_files {
+            let meta = std::fs::metadata(path)?;
             if (meta.len() as usize) < TRAILER_LEN {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, format!("Part {:03} too small", i)));
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "Part too small"));
             }
             let data_len = meta.len() - TRAILER_LEN as u64;
-            let file = File::open(&path)?;
+            let file = File::open(path)?;
             parts.push(PartEntry { file, data_len });
         }
         if parts.is_empty() { return Err(io::Error::new(io::ErrorKind::NotFound, "No parts found")); }
