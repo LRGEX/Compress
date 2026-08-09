@@ -208,6 +208,114 @@ fn build_sidecar(files: &[FileEnt]) -> Vec<u8> {
     buf
 }
 
+/// THE ONE COMPRESS ENGINE. Feeds files through tar::Builder → zstd::Encoder → any Write sink.
+/// The caller writes the LRGEX header BEFORE calling this, and finalizes the sink AFTER.
+/// Returns (success, skipped_files).
+fn compress_into<W: std::io::Write>(
+    files: &[FileEnt],
+    sink: W,
+    cancel: &AtomicBool,
+    progress: &Progress,
+) -> (bool, Vec<String>) {
+    let mut encoder = match zstd::Encoder::new(sink, 1) {
+        Ok(e) => e,
+        Err(_) => return (false, vec![]),
+    };
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get() as u32).unwrap_or(4);
+    let _ = encoder.multithread(threads);
+    let _ = encoder.include_checksum(false);
+    use zstd::stream::raw::CParameter;
+    let _ = encoder.set_parameter(CParameter::JobSize(16 * 1024 * 1024));
+    let _ = encoder.set_parameter(CParameter::OverlapSizeLog(0));
+    let mut builder = tar::Builder::new(encoder.auto_finish());
+
+    let _ = write_sidecar(&mut builder, files);
+
+    let mut skipped: Vec<String> = Vec::new();
+    let mut cancelled = false;
+
+    for batch in files.chunks(BATCH) {
+        if cancel.load(Ordering::Relaxed) { cancelled = true; break; }
+        let loaded: Vec<Option<std::io::Result<Vec<u8>>>> = batch
+            .par_iter()
+            .map(|e| {
+                match e.kind {
+                    EntKind::File if e.size <= BIG_FILE => {
+                        let r = read_whole(&e.path, e.size);
+                        progress.tick_bytes(e.size);
+                        Some(r)
+                    }
+                    _ => None,
+                }
+            })
+            .collect();
+
+        for (e, data) in batch.iter().zip(loaded.into_iter()) {
+            if cancel.load(Ordering::Relaxed) { cancelled = true; break; }
+            let res: std::io::Result<()> = match &e.kind {
+                EntKind::Symlink { target } => {
+                    let mut h = tar::Header::new_gnu();
+                    h.set_entry_type(tar::EntryType::Symlink);
+                    h.set_size(0); h.set_mode(0o777); h.set_uid(0); h.set_gid(0);
+                    h.set_mtime(e.meta.mtime);
+                    if let Err(e) = h.set_link_name(target) { Err(e) }
+                    else { h.set_cksum(); builder.append_data(&mut h, &e.rel, std::io::empty()) }
+                }
+                EntKind::Dir => {
+                    let mut h = tar::Header::new_gnu();
+                    h.set_entry_type(tar::EntryType::Directory);
+                    h.set_size(0); h.set_mode(0o755); h.set_uid(0); h.set_gid(0);
+                    h.set_mtime(e.meta.mtime); h.set_cksum();
+                    builder.append_data(&mut h, &e.rel, std::io::empty())
+                }
+                EntKind::File => {
+                    match data {
+                        Some(Ok(buf)) => {
+                            let mut h = make_header(buf.len() as u64, e.meta.mtime, 0o644);
+                            let mut slice: &[u8] = buf.as_slice();
+                            builder.append_data(&mut h, &e.rel, &mut slice)
+                        }
+                        Some(Err(err)) => Err(err),
+                        None => {
+                            match std::fs::File::open(&e.path) {
+                                Ok(f) => match f.metadata() {
+                                    Ok(m) => {
+                                        let mut h = make_header(m.len(), e.meta.mtime, 0o644);
+                                        let br = ByteReader::with_cancel(f, progress.clone(), cancel);
+                                        let mut buf = std::io::BufReader::with_capacity(4 * 1024 * 1024, br);
+                                        builder.append_data(&mut h, &e.rel, &mut buf)
+                                    }
+                                    Err(err) => Err(err),
+                                },
+                                Err(err) => Err(err),
+                            }
+                        }
+                    }
+                }
+            };
+            if let Err(_err) = &res {
+                if cancel.load(Ordering::Relaxed) { cancelled = true; }
+                else { skipped.push(e.path.to_string_lossy().to_string()); }
+            }
+        }
+        if cancelled { break; }
+    }
+
+    if cancelled {
+        drop(builder);
+        return (false, skipped);
+    }
+
+    progress.set_phase(2); // flush phase
+    let mut ok = builder.finish().is_ok();
+    match builder.into_inner() {
+        Ok(mut enc) => { if enc.flush().is_err() { ok = false; } }
+        Err(_) => ok = false,
+    }
+    (ok, skipped)
+}
+
 /// Write the sidecar as the FIRST entry in the archive (a regular file at SIDECAR_PATH).
 /// Must be called BEFORE any real entries are appended.
 fn write_sidecar(builder: &mut tar::Builder<impl Write>, files: &[FileEnt]) -> std::io::Result<()> {
@@ -286,165 +394,10 @@ pub fn compress_folder(
     let _ = header_writer.write_all(b"LRGEX\x01");
     let _ = header_writer.write_all(&total_bytes.to_le_bytes());
 
-    let mut encoder = match zstd::Encoder::new(header_writer, 1) {
-        Ok(e) => e,
-        Err(_) => {
-            progress.finish(4);
-            let _ = heartbeat.join();
-            let _ = std::fs::remove_file(&part);
-            return (false, vec![]);
-        }
-    };
-    // Multi-threaded compression — biggest win (~N x on N cores). Requires the
-    // "zstdmt" feature AND this call; a comment alone does nothing.
-    let threads = std::thread::available_parallelism()
-        .map(|n| n.get() as u32)
-        .unwrap_or(4);
-    let _ = encoder.multithread(threads);
-    let _ = encoder.include_checksum(false);
-    // Tune multithread job sizing. At level 1 the default zstdmt job size lands around
-    // 512KB-2MB — with 24 workers that means tons of tiny jobs and thread-handoff
-    // overhead. Bump job size to 16MB so each worker does real work, and disable overlap
-    // (OverlapSizeLog(0)) — overlap helps ratio at higher levels but at L1 we want
-    // raw throughput.
-    use zstd::stream::raw::CParameter;
-    let _ = encoder.set_parameter(CParameter::JobSize(16 * 1024 * 1024));
-    let _ = encoder.set_parameter(CParameter::OverlapSizeLog(0));
-    let mut builder = tar::Builder::new(encoder.auto_finish());
+    // Run the ONE engine (compress_into). The old inline engine code is replaced.
+    let (ok, skipped) = compress_into(&files, header_writer, cancel, &progress);
 
-    // Write the metadata sidecar as the FIRST entry (path-keyed packed blob of
-    // ctime + attrs for every planned entry). Replaces 11k+ per-entry PAX headers.
-    // See build_sidecar / SIDECAR_PATH. mtime stays in each entry's native tar field.
-    let _ = write_sidecar(&mut builder, &files);
-
-    let mut skipped: Vec<String> = Vec::new();
-    let mut cancelled = false;
-
-    for batch in files.chunks(BATCH) {
-        if cancel.load(Ordering::Relaxed) {
-            cancelled = true;
-            break;
-        }
-        let loaded: Vec<Option<std::io::Result<Vec<u8>>>> = batch
-            .par_iter()
-            .map(|e| {
-                match e.kind {
-                    EntKind::File if e.size <= BIG_FILE => {
-                        let r = read_whole(&e.path, e.size);
-                        progress.tick_bytes(e.size); // bytes tick during the parallel read
-                        Some(r)
-                    }
-                    _ => None, // dir / symlink (no body) or large file (stream later)
-                }
-            })
-            .collect();
-
-        for (e, data) in batch.iter().zip(loaded.into_iter()) {
-            if cancel.load(Ordering::Relaxed) {
-                cancelled = true;
-                break;
-            }
-            let res: std::io::Result<()> = match &e.kind {
-                EntKind::Symlink { target } => {
-                    // Symbolic link: tar native Symlink entry, link name = target. No body.
-                    // If set_link_name fails (e.g. target path too long for tar), surface it
-                    // as an error so the entry is logged to `skipped` — never silently drop
-                    // a link, that would break the "preserved as-is" promise.
-                    // (ctime + attrs come from the sidecar at the front of the archive — no PAX here.)
-                    let mut h = tar::Header::new_gnu();
-                    h.set_entry_type(tar::EntryType::Symlink);
-                    h.set_size(0);
-                    h.set_mode(0o777);
-                    h.set_uid(0);
-                    h.set_gid(0);
-                    h.set_mtime(e.meta.mtime);
-                    if let Err(e) = h.set_link_name(target) {
-                        Err(e) // target unrepresentable → entry goes to skipped list
-                    } else {
-                        h.set_cksum();
-                        builder.append_data(&mut h, &e.rel, std::io::empty())
-                    }
-                }
-                EntKind::Dir => {
-                    // Directory entry: header only, no content (preserves empty folders).
-                    // (ctime + attrs come from the sidecar — no PAX here.)
-                    let mut h = tar::Header::new_gnu();
-                    h.set_entry_type(tar::EntryType::Directory);
-                    h.set_size(0);
-                    h.set_mode(0o755);
-                    h.set_uid(0);
-                    h.set_gid(0);
-                    h.set_mtime(e.meta.mtime);
-                    h.set_cksum();
-                    builder.append_data(&mut h, &e.rel, std::io::empty())
-                }
-                EntKind::File => {
-                    // (ctime + attrs come from the sidecar — no PAX here.)
-                    match data {
-                        Some(Ok(buf)) => {
-                            let mut h = make_header(buf.len() as u64, e.meta.mtime, 0o644);
-                            let mut slice: &[u8] = buf.as_slice();
-                            builder.append_data(&mut h, &e.rel, &mut slice)
-                        }
-                        Some(Err(err)) => Err(err),
-                        None => {
-                            // Large file: stream through ByteReader so bytes tick during compress.
-                            match std::fs::File::open(&e.path) {
-                                Ok(f) => match f.metadata() {
-                                    Ok(m) => {
-                                        let mut h = make_header(m.len(), e.meta.mtime, 0o644);
-                                        // BufReader between ByteReader and tar: tar reads in 512-byte
-                                        // blocks, which would be billions of tiny read() syscalls on
-                                        // a multi-GB file. BufReader batches them into 4 MB reads.
-                                        let br = ByteReader::with_cancel(f, progress.clone(), cancel);
-                                        let mut buf = std::io::BufReader::with_capacity(4 * 1024 * 1024, br);
-                                        builder.append_data(&mut h, &e.rel, &mut buf)
-                                    }
-                                    Err(err) => Err(err),
-                                },
-                                Err(err) => Err(err),
-                            }
-                        }
-                    }
-                }
-            };
-            if let Err(_err) = &res {
-                if cancel.load(Ordering::Relaxed) {
-                    cancelled = true;
-                } else {
-                    skipped.push(e.path.to_string_lossy().to_string());
-                }
-            }
-        }
-        if cancelled {
-            break;
-        }
-    }
-
-    if cancelled {
-        // User cancelled mid-compress: release the .part handle, then delete the partial.
-        drop(builder);
-        let _ = std::fs::remove_file(&part);
-        progress.finish(5); // cancelled
-        let _ = heartbeat.join();
-        return (false, skipped);
-    }
-
-    progress.set_phase(2); // flush
-    let mut ok = builder.finish().is_ok();
-    match builder.into_inner() {
-        Ok(mut enc) => {
-            if enc.flush().is_err() {
-                ok = false;
-            }
-        }
-        Err(_) => ok = false,
-    }
-
-    // Publish the archive as long as the flush succeeded. Skipped files (locked /
-    // unreadable) are a WARNING, not a total failure — never discard a multi-GB job
-    // over one locked file (WinRAR-style). The skip count is surfaced to the GUI.
-    progress.set_skipped(skipped.len());
+    // Publish or clean up.
     let success = if ok {
         crate::metaattr::atomic_replace(&part, dest).is_ok()
     } else {
@@ -461,11 +414,72 @@ pub fn compress_folder(
             let _ = std::fs::write(&sidecar, skipped.join("\r\n"));
         }
     }
-    // finish() writes the terminal snapshot BEFORE stop; heartbeat.join() guarantees it
-    // is on disk before we return.
-    progress.finish(if success { 3 } else { 4 });
+    progress.set_skipped(skipped.len());
+    // Distinguish cancel (phase 5) from failure (phase 4) from success (phase 3).
+    let phase = if success { 3 } else if cancel.load(Ordering::Relaxed) { 5 } else { 4 };
+    progress.finish(phase);
     let _ = heartbeat.join();
 
+    (success, skipped)
+}
+
+/// Compress a folder to split .zgx parts. Each part capped at `segment_size_mb` MB.
+/// Produces `MyFolder.part001.zgx`, `.part002.zgx`, etc. with per-part SHA256 trailers.
+pub fn compress_folder_split(
+    source: &Path,
+    base_dest: &Path,       // base path WITHOUT extension (e.g. "C:\out\MyFolder")
+    segment_size_mb: u32,
+    excluded: &[String],
+    cancel: &AtomicBool,
+) -> (bool, Vec<String>) {
+    progress::clear_status();
+    let label = source.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let progress = Progress::new(&label);
+    let heartbeat = progress.spawn_writer();
+    progress.set_phase(0);
+
+    let (files, total_bytes, count) = walk_tree(source, excluded);
+    progress.set_totals(count, total_bytes);
+    progress.set_phase(1);
+
+    // Pre-flight: check part count won't exceed MAX_PARTS.
+    let segment_bytes = (segment_size_mb as u64).max(1) * 1024 * 1024;
+    let data_budget = segment_bytes.saturating_sub(crate::segment::TRAILER_LEN as u64).max(1);
+    let estimated_parts = total_bytes.div_ceil(data_budget).max(1);
+    if estimated_parts > crate::segment::MAX_PARTS as u64 {
+        progress.finish(4);
+        let _ = heartbeat.join();
+        return (false, vec![format!(
+            "Folder too large for {} MB parts (~{} parts needed; max {}). Use a larger size.",
+            segment_size_mb, estimated_parts, crate::segment::MAX_PARTS)]);
+    }
+
+    let mut writer = crate::segment::SegmentWriter::new(
+        base_dest.to_path_buf(), segment_size_mb, total_bytes,
+    );
+
+    // Run the ONE engine. SegmentWriter writes its own 0x02 header on first write.
+    let (ok, skipped) = compress_into(&files, &mut writer, cancel, &progress);
+
+    // Finalize: write last trailer + rename last .tmp. Sets finished_ok so Drop doesn't clean up.
+    let success = if ok {
+        writer.finish().is_ok()
+    } else {
+        writer.cleanup_all();
+        false
+    };
+
+    // Sidecar.
+    let sidecar = format!("{}.skipped.txt", base_dest.display());
+    if success {
+        if skipped.is_empty() { let _ = std::fs::remove_file(&sidecar); }
+        else { let _ = std::fs::write(&sidecar, skipped.join("\r\n")); }
+    }
+
+    progress.set_skipped(skipped.len());
+    let phase = if success { 3 } else if cancel.load(Ordering::Relaxed) { 5 } else { 4 };
+    progress.finish(phase);
+    let _ = heartbeat.join();
     (success, skipped)
 }
 

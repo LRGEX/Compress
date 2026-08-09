@@ -25,6 +25,7 @@ hex = "0.4"
 rand = "0.8"
 ed25519-dalek = "2"
 backtrace = "0.3"
+sha2 = "0.10"
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_System_Threading",

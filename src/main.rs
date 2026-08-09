@@ -13,6 +13,7 @@ mod extract;
 mod metaattr;
 mod multiselect;
 mod progress;
+mod segment;
 mod update;
 
 use std::path::PathBuf;
@@ -212,6 +213,7 @@ fn show_help() {
          lrgex-compress <folder-or-file>     Compress → <name>.zgx\n\
          lrgex-compress -x <archive>         Extract → <name>\\ folder\n\
          lrgex-compress -x -h <archive>      Extract here (into the archive's folder)\n\
+         lrgex-compress --split [--size <MB>] <folder>  Compress → split .partNNN.zgx\n\
          lrgex-compress --help               Show this help\n\n\
          Supported formats:\n\
          • Compress: .zgx (tar + zstd)\n\
@@ -352,6 +354,59 @@ fn main() {
         return;
     }
 
+    // --- SPLIT COMPRESS path ---
+    let is_split = args.len() >= 2 && args[1] == "--split";
+    if is_split {
+        let mut size_mb: u32 = 30; // default if not specified
+        let mut folder: Option<PathBuf> = None;
+        let mut i = 2;
+        while i < args.len() {
+            if args[i] == "--size" && i + 1 < args.len() {
+                size_mb = args[i + 1].parse::<u32>().unwrap_or(30).max(1);
+                i += 2;
+            } else {
+                folder = Some(PathBuf::from(&args[i]));
+                i += 1;
+            }
+        }
+        let folder = match folder {
+            Some(f) if f.is_dir() => f,
+            _ => { show_error("No folder specified for split compress."); return; }
+        };
+
+        // Compute base dest (folder name, no .zgx extension).
+        let name = folder.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Archive".to_string());
+        let dest_base = folder.parent()
+            .map(|p| p.join(&name))
+            .unwrap_or_else(|| PathBuf::from(&name));
+
+        // Overwrite check: scan for ALL existing parts (not just part001).
+        let parent = dest_base.parent().unwrap_or(std::path::Path::new("."));
+        let stale_parts: Vec<PathBuf> = std::fs::read_dir(parent)
+            .into_iter().flatten().flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                let s = p.file_name().unwrap_or_default().to_string_lossy();
+                s.starts_with(&format!("{}.part", name)) && s.ends_with(".zgx")
+            })
+            .collect();
+        if !stale_parts.is_empty() {
+            if !confirm_overwrite(&stale_parts[0]) { return; }
+            for p in &stale_parts { let _ = std::fs::remove_file(p); }
+        }
+
+        run_one(
+            "Compressing (Split)".to_string(),
+            Some(format!("{} MB parts", size_mb)),
+            true,
+            dest_base,
+            OpKind::CompressSplit(folder, size_mb),
+        );
+        return;
+    }
+
     let is_extract = args.len() >= 3 && args[1] == "-x";
 
     // --- EXTRACT path (no multi-select) ---
@@ -376,6 +431,9 @@ fn main() {
         let op_detail = name.clone();
         let dest: PathBuf = if extract_here {
             archive.parent().unwrap_or(PathBuf::from(".").as_path()).to_path_buf()
+        } else if let Some((base, _)) = crate::segment::parse_split_part(&archive) {
+            // Split archive: strip .partNNN.zgx → base name (e.g. "src" not "src.part001").
+            base
         } else {
             archive.with_extension("")
         };
@@ -471,6 +529,7 @@ enum OpKind {
     Extract(PathBuf),
     CompressOne(PathBuf),
     CompressMany(Vec<PathBuf>),
+    CompressSplit(PathBuf, u32), // (folder, segment_size_mb)
 }
 
 fn run_one(op_label: String, op_detail: Option<String>, cancellable: bool, dest: PathBuf, op: OpKind) {
@@ -506,6 +565,10 @@ fn run_one(op_label: String, op_detail: Option<String>, cancellable: bool, dest:
             OpKind::CompressMany(inputs) => {
                 let label = dest.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
                 let r = compress::compress_paths(&inputs, &dest, &label, &cancel_for_thread);
+                (r.0, if r.1.is_empty() { String::new() } else { r.1.join(", ") })
+            }
+            OpKind::CompressSplit(f, seg_mb) => {
+                let r = compress::compress_folder_split(&f, &dest, seg_mb, &[], &cancel_for_thread);
                 (r.0, if r.1.is_empty() { String::new() } else { r.1.join(", ") })
             }
         };

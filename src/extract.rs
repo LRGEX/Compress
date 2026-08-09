@@ -262,6 +262,10 @@ fn detect_format(path: &Path) -> Option<Format> {
 
 /// Top-level dispatcher. Routes to the right handler by detected format.
 pub fn extract_archive(archive: &Path, dest: &Path) -> (bool, String) {
+    // Split .zgx detection FIRST (by filename pattern) — before magic-byte detect.
+    if crate::segment::parse_split_part(archive).is_some() {
+        return extract_split_zgx(archive, dest);
+    }
     match detect_format(archive) {
         Some(Format::Zgx) => extract_zgx(archive, dest),
         Some(Format::Zip) => extract_zip(archive, dest),
@@ -275,6 +279,10 @@ pub fn extract_archive(archive: &Path, dest: &Path) -> (bool, String) {
 /// exists on disk under `dest`. Used to prompt the user before overwriting (WinRAR-style).
 /// Best-effort: on any read error, returns false (let the extract path handle the error).
 pub fn has_conflicts(archive: &Path, dest: &Path) -> bool {
+    // Split .zgx detection FIRST.
+    if crate::segment::parse_split_part(archive).is_some() {
+        return split_has_conflicts(archive, dest);
+    }
     // NOTE: we deliberately do NOT fast-path on empty/non-existent dest. A file could
     // appear in the window between an empty check and the extract. Always scan the
     // archive contents so the prompt fires for any real conflict. (For a genuinely
@@ -1031,6 +1039,104 @@ fn zip_mtime_to_epoch(dt: zip::DateTime) -> Option<u64> {
         + dt.minute() as u64 * 60
         + dt.second() as u64;
     Some(secs)
+}
+
+/// Split .zgx extraction: chains parts via ConcatReader, verifies SHA256 trailers,
+/// then feeds to the existing zstd::Decoder → tar::Archive → extract_zgx_inner.
+fn extract_split_zgx(archive: &Path, dest: &Path) -> (bool, String) {
+    progress::clear_status();
+    let label = archive.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let prog = Progress::new(&label);
+    let heartbeat = prog.spawn_writer();
+    prog.set_phase(1);
+
+    let base = crate::segment::parse_split_part(archive)
+        .map(|(b, _)| b)
+        .unwrap_or_else(|| archive.to_path_buf());
+
+    let (reader, header_total, data_sum) = match crate::segment::ConcatReader::open_and_verify(&base) {
+        Ok(r) => r,
+        Err(e) => {
+            prog.finish(4);
+            let _ = heartbeat.join();
+            return (false, e.to_string());
+        }
+    };
+
+    // Use header_total (uncompressed) for progress; fall back to data_sum if 0.
+    let total = if header_total > 0 { header_total } else { data_sum };
+    prog.set_totals(0, total);
+
+    // P0-1 fix: ByteReader wraps the DECODER (decompressed bytes), not the raw stream.
+    let buf_reader = std::io::BufReader::with_capacity(256 * 1024, reader);
+    let decoder = match zstd::Decoder::new(buf_reader) {
+        Ok(d) => d,
+        Err(e) => { prog.finish(4); let _ = heartbeat.join(); return (false, format!("zstd: {}", e)); }
+    };
+    let counting = ByteReader::new(decoder, prog.clone());
+    let buf = std::io::BufReader::with_capacity(256 * 1024, counting);
+    let mut tar = tar::Archive::new(buf);
+
+    // Create dest before extracting (extract_zgx_inner assumes it exists).
+    let _ = std::fs::create_dir_all(dest);
+
+    let result = extract_zgx_inner(&mut tar, dest);
+
+    match result {
+        ZgxOutcome::Done(skipped) => {
+            if skipped > 0 { prog.set_skipped(skipped); }
+            // N-7: verify decompressed total matches header (catches silent truncation).
+            if header_total > 0 {
+                let decompressed = prog.bytes_done();
+                if decompressed < header_total {
+                    prog.finish(3);
+                    let _ = heartbeat.join();
+                    return (true, format!(
+                        "WARNING: archive may be truncated (got {} of {} bytes)",
+                        decompressed, header_total));
+                }
+            }
+            prog.finish(3);
+            let _ = heartbeat.join();
+            (true, String::new())
+        }
+        ZgxOutcome::ElevatedRelaunched => {
+            prog.finish(3);
+            let _ = heartbeat.join();
+            std::process::exit(0);
+        }
+        ZgxOutcome::Failed(e) => {
+            prog.finish(4);
+            let _ = heartbeat.join();
+            (false, format!("extract failed: {}", e))
+        }
+    }
+}
+
+/// Conflict check for split archives (uses open_no_verify — no SHA hashing).
+fn split_has_conflicts(archive: &Path, dest: &Path) -> bool {
+    let base = crate::segment::parse_split_part(archive)
+        .map(|(b, _)| b)
+        .unwrap_or_else(|| archive.to_path_buf());
+    let reader = match crate::segment::ConcatReader::open_no_verify(&base) {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+    let decoder = match zstd::Decoder::new(reader) { Ok(d) => d, Err(_) => return false };
+    let mut tar = tar::Archive::new(decoder);
+    let entries = match tar.entries() { Ok(e) => e, Err(_) => return false };
+    for entry in entries {
+        if let Ok(e) = entry {
+            if e.header().entry_type().is_dir() { continue; }
+            if let Ok(p) = e.path() {
+                use std::path::Component;
+                if p.is_absolute() { continue; }
+                if p.components().any(|c| !matches!(c, Component::Normal(_) | Component::CurDir)) { continue; }
+                if dest.join(&p).exists() { return true; }
+            }
+        }
+    }
+    false
 }
 
 /// .zip — via the `zip` crate (pure Rust). Decompressed bytes tick into Progress

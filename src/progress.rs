@@ -80,6 +80,11 @@ impl Progress {
         self.inner.bytes_done.fetch_add(bytes, Ordering::Relaxed);
     }
 
+    /// N-7/P0-1: accessor for post-extract truncation check.
+    pub fn bytes_done(&self) -> u64 {
+        self.inner.bytes_done.load(Ordering::Relaxed)
+    }
+
     fn snapshot_json(&self, pid: u32) -> String {
         let done = self.inner.files_done.load(Ordering::Relaxed);
         let total = self.inner.files_total.load(Ordering::Relaxed);
