@@ -133,6 +133,12 @@ pub fn check_version_only() -> Option<UpdateInfo> {
     // prompt) so it can overwrite the machine-wide copy. The installer is Ed25519-
     // verified before launch, which is what makes the %TEMP% elevation safe.
 
+    // "Don't ask again": if the user previously declined THIS version, skip silently.
+    // A newer version will prompt again (different version string = different marker).
+    if is_update_declined(&manifest.version) {
+        return None;
+    }
+
     Some(UpdateInfo {
         version: manifest.version,
         url: manifest.platforms.windows.url,
@@ -154,6 +160,8 @@ pub fn apply_update(info: UpdateInfo) {
         .set_buttons(rfd::MessageButtons::YesNo)
         .show();
     if confirm != rfd::MessageDialogResult::Yes {
+        // User declined this version — save it so we don't ask again until a newer one.
+        mark_update_declined(&info.version);
         return;
     }
 
@@ -414,4 +422,88 @@ fn is_newer(remote: &str, current: &str) -> bool {
         }
     }
     false
+}
+
+/// "Don't ask again" — per-version skip.
+/// When the user clicks "No" on the update prompt, save the version they declined.
+/// Next launch, if the remote version matches the declined version, skip silently.
+/// A newer version (different version string) prompts again.
+/// Stored in %LOCALAPPDATA%\LRGEX Compress\declined_update.txt (just the version string).
+fn declined_update_path() -> Option<std::path::PathBuf> {
+    std::env::var("LOCALAPPDATA")
+        .ok()
+        .map(|d| std::path::PathBuf::from(d).join("LRGEX Compress").join("declined_update.txt"))
+}
+
+/// Check if the user previously declined this exact version.
+fn is_update_declined(version: &str) -> bool {
+    match declined_update_path() {
+        Some(path) => {
+            match std::fs::read_to_string(&path) {
+                Ok(content) => content.trim() == version,
+                Err(_) => false, // file doesn't exist or unreadable → not declined
+            }
+        }
+        None => false, // no LOCALAPPDATA → can't persist → always ask
+    }
+}
+
+/// Mark a version as declined (user clicked "No").
+fn mark_update_declined(version: &str) {
+    if let Some(path) = declined_update_path() {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&path, version);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    // Serialize tests that touch LOCALAPPDATA so they don't race.
+    static LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn declined_update_roundtrip() {
+        let _guard = LOCK.lock().unwrap();
+
+        // Save original LOCALAPPDATA, override to a temp dir.
+        let orig = std::env::var("LOCALAPPDATA").ok();
+        let tmp = std::env::temp_dir().join(format!("decline-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::env::set_var("LOCALAPPDATA", &tmp);
+
+        // Initially: nothing declined.
+        assert!(!is_update_declined("1.5.1"));
+
+        // Decline 1.5.1.
+        mark_update_declined("1.5.1");
+
+        // Same version → declined.
+        assert!(is_update_declined("1.5.1"));
+
+        // Different version → not declined.
+        assert!(!is_update_declined("1.5.2"));
+
+        // Decline a newer version → overwrites the marker.
+        mark_update_declined("1.5.2");
+        assert!(!is_update_declined("1.5.1"));
+        assert!(is_update_declined("1.5.2"));
+
+        // Clean up.
+        std::env::set_var("LOCALAPPDATA", orig.unwrap_or_default());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn is_newer_version_compare() {
+        assert!(is_newer("1.5.1", "1.4.4"));
+        assert!(is_newer("2.0.0", "1.9.9"));
+        assert!(!is_newer("1.5.1", "1.5.1"));
+        assert!(!is_newer("1.4.4", "1.5.1"));
+    }
 }
