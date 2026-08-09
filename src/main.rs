@@ -24,7 +24,7 @@ use std::time::Duration;
 use slint::{Timer, TimerMode};
 
 slint::slint! {
-    import { VerticalBox, HorizontalBox, Button } from "std-widgets.slint";
+    import { VerticalBox, HorizontalBox, Button, LineEdit } from "std-widgets.slint";
 
     // Effect 1: gentle glow behind the logo — pulses in place, no expansion.
     component Halo inherits Rectangle {
@@ -201,6 +201,53 @@ slint::slint! {
             }
         }
     }
+
+    export component SplitWindow inherits Window {
+        title: "LRGEX Compress - Split";
+        background: #1e1e1e;
+        preferred-width: 340px;
+        preferred-height: 200px;
+        in-out property <string> size-text: "30";
+        callback accepted(bool);
+
+        VerticalBox {
+            Text {
+                text: "Split into volumes of:";
+                color: #e0e0e0;
+                font-size: 14px;
+            }
+
+            HorizontalBox {
+                LineEdit {
+                    text <=> root.size-text;
+                    preferred-width: 120px;
+                }
+                Text {
+                    text: "MB";
+                    color: #888;
+                    vertical-alignment: center;
+                }
+            }
+
+            Text {
+                text: "Quick:";
+                color: #888;
+                font-size: 12px;
+            }
+
+            HorizontalBox {
+                Button { text: "50"; clicked => { root.size-text = "50"; } }
+                Button { text: "100"; clicked => { root.size-text = "100"; } }
+                Button { text: "700"; clicked => { root.size-text = "700"; } }
+                Button { text: "4G"; clicked => { root.size-text = "4096"; } }
+            }
+
+            HorizontalBox {
+                Button { text: "Cancel"; clicked => { root.accepted(false); } }
+                Button { text: "Compress"; clicked => { root.accepted(true); } }
+            }
+        }
+    }
 }
 
 fn show_help() {
@@ -357,11 +404,13 @@ fn main() {
     // --- SPLIT COMPRESS path ---
     let is_split = args.len() >= 2 && args[1] == "--split";
     if is_split {
-        let mut size_mb: u32 = 30; // default if not specified
+        let mut has_size = false;
+        let mut size_mb: u32 = 30;
         let mut folder: Option<PathBuf> = None;
         let mut i = 2;
         while i < args.len() {
             if args[i] == "--size" && i + 1 < args.len() {
+                has_size = true;
                 size_mb = args[i + 1].parse::<u32>().unwrap_or(30).max(1);
                 i += 2;
             } else {
@@ -373,6 +422,23 @@ fn main() {
             Some(f) if f.is_dir() => f,
             _ => { show_error("No folder specified for split compress."); return; }
         };
+
+        // If --size wasn't given on CLI, show the Slint SplitWindow for input.
+        if !has_size {
+            let app = match SplitWindow::new() {
+                Ok(a) => a,
+                Err(e) => { show_error(&format!("UI error: {}", e)); return; }
+            };
+            let accepted = Arc::new(AtomicBool::new(false));
+            let accepted_clone = accepted.clone();
+            app.on_accepted(move |ok| {
+                accepted_clone.store(ok, Ordering::Relaxed);
+                let _ = slint::quit_event_loop();
+            });
+            let _ = app.run();
+            if !accepted.load(Ordering::Relaxed) { return; }
+            size_mb = app.get_size_text().parse::<u32>().unwrap_or(30).max(1);
+        }
 
         // Compute base dest (folder name, no .zgx extension).
         let name = folder.file_name()

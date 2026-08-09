@@ -64,6 +64,12 @@ Root: HKA; Subkey: "Software\Classes\Directory\ContextMenus\LRGEX\shell\compress
     ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName},0"
 Root: HKA; Subkey: "Software\Classes\Directory\ContextMenus\LRGEX\shell\compress\command"; \
     ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""
+Root: HKA; Subkey: "Software\Classes\Directory\ContextMenus\LRGEX\shell\splitcompress"; \
+    ValueType: string; ValueName: ""; ValueData: "Split Compress"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\Directory\ContextMenus\LRGEX\shell\splitcompress"; \
+    ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName},0"
+Root: HKA; Subkey: "Software\Classes\Directory\ContextMenus\LRGEX\shell\splitcompress\command"; \
+    ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" --split ""%1"""
 
 ; ===== FILES (all): cascade "LRGEX" -> hover -> "Compress" =====
 Root: HKA; Subkey: "Software\Classes\*\shell\LRGEX"; \
@@ -80,6 +86,12 @@ Root: HKA; Subkey: "Software\Classes\*\ContextMenus\LRGEX\shell\compress"; \
     ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName},0"
 Root: HKA; Subkey: "Software\Classes\*\ContextMenus\LRGEX\shell\compress\command"; \
     ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""
+Root: HKA; Subkey: "Software\Classes\*\ContextMenus\LRGEX\shell\splitcompress"; \
+    ValueType: string; ValueName: ""; ValueData: "Split Compress"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\*\ContextMenus\LRGEX\shell\splitcompress"; \
+    ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName},0"
+Root: HKA; Subkey: "Software\Classes\*\ContextMenus\LRGEX\shell\splitcompress\command"; \
+    ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" --split ""%1"""
 
 ; ===== .zgx: cascade "LRGEX" -> hover -> "Extract" (+ double-click = extract) =====
 Root: HKA; Subkey: "Software\Classes\.zgx"; \
