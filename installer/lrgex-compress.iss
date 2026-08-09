@@ -72,7 +72,13 @@ Root: HKA; Subkey: "Software\Classes\Directory\ContextMenus\LRGEX\shell\splitcom
     ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" --split ""%1"""
 
 ; ===== FILES (all): cascade "LRGEX" -> hover -> "Compress" =====
-; (Split Compress is NOT on files — only on folders/Directories.)
+; (Split Compress on files too — single file or multi-select.)
+Root: HKA; Subkey: "Software\Classes\*\ContextMenus\LRGEX\shell\splitcompress"; \
+    ValueType: string; ValueName: ""; ValueData: "Split Compress"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\*\ContextMenus\LRGEX\shell\splitcompress"; \
+    ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName},0"
+Root: HKA; Subkey: "Software\Classes\*\ContextMenus\LRGEX\shell\splitcompress\command"; \
+    ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" --split ""%1"""
 Root: HKA; Subkey: "Software\Classes\*\shell\LRGEX"; \
     ValueType: string; ValueName: ""; ValueData: "LRGEX"; Flags: uninsdeletekey
 Root: HKA; Subkey: "Software\Classes\*\shell\LRGEX"; \

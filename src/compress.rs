@@ -483,6 +483,82 @@ pub fn compress_folder_split(
     (success, skipped)
 }
 
+/// Compress MULTIPLE inputs to split .zgx parts. Mirrors compress_paths but with
+/// a SegmentWriter sink instead of a File.
+pub fn compress_paths_split(
+    inputs: &[PathBuf],
+    base_dest: &Path,
+    label: &str,
+    segment_size_mb: u32,
+    cancel: &AtomicBool,
+) -> (bool, Vec<String>) {
+    progress::clear_status();
+    let progress = Progress::new(label);
+    let heartbeat = progress.spawn_writer();
+    progress.set_phase(0);
+
+    // Walk every input into one entries list (same as compress_paths).
+    let mut files: Vec<FileEnt> = Vec::new();
+    let mut total_bytes: u64 = 0;
+    for input in inputs {
+        if input.is_dir() {
+            let prefix = PathBuf::from(input.file_name().unwrap_or_else(|| std::ffi::OsStr::new(".")));
+            let (mut entries, bytes, _) = walk_tree(input, &[]);
+            for e in entries.drain(..) {
+                let new_rel = prefix.join(&e.rel);
+                files.push(FileEnt { path: e.path, rel: new_rel, size: e.size, kind: e.kind, meta: e.meta });
+            }
+            total_bytes += bytes;
+        } else if input.is_file() {
+            let size = std::fs::metadata(input).map(|m| m.len()).unwrap_or(0);
+            let rel = input.file_name().map(PathBuf::from).unwrap_or_else(|| input.clone());
+            let meta = metaattr::read_meta(input);
+            files.push(FileEnt { path: input.clone(), rel, size, kind: EntKind::File, meta });
+            total_bytes += size;
+        }
+    }
+    let count = files.len();
+    progress.set_totals(count, total_bytes);
+    progress.set_phase(1);
+
+    // Pre-flight part count check.
+    let segment_bytes = (segment_size_mb as u64).max(1) * 1024 * 1024;
+    let data_budget = segment_bytes.saturating_sub(crate::segment::TRAILER_LEN as u64).max(1);
+    let estimated_parts = total_bytes.div_ceil(data_budget).max(1);
+    if estimated_parts > crate::segment::MAX_PARTS as u64 {
+        progress.finish(4);
+        let _ = heartbeat.join();
+        return (false, vec![format!(
+            "Too large for {} MB parts (~{} needed; max {}).",
+            segment_size_mb, estimated_parts, crate::segment::MAX_PARTS)]);
+    }
+
+    let mut writer = crate::segment::SegmentWriter::new(
+        base_dest.to_path_buf(), segment_size_mb, total_bytes,
+    );
+
+    let (ok, skipped) = compress_into(&files, &mut writer, cancel, &progress);
+
+    let success = if ok {
+        writer.finish().is_ok()
+    } else {
+        writer.cleanup_all();
+        false
+    };
+
+    let sidecar = format!("{}.skipped.txt", base_dest.display());
+    if success {
+        if skipped.is_empty() { let _ = std::fs::remove_file(&sidecar); }
+        else { let _ = std::fs::write(&sidecar, skipped.join("\r\n")); }
+    }
+
+    progress.set_skipped(skipped.len());
+    let phase = if success { 3 } else if cancel.load(Ordering::Relaxed) { 5 } else { 4 };
+    progress.finish(phase);
+    let _ = heartbeat.join();
+    (success, skipped)
+}
+
 /// Compress MULTIPLE inputs (multi-select) into ONE .zgx. Each input is walked and
 /// appended to the same tar stream; entry paths are relative to the shared parent so
 /// the archive opens with a clean tree. Empty dirs across inputs are preserved.

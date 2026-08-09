@@ -419,9 +419,16 @@ fn main() {
             }
         }
         let folder = match folder {
-            Some(f) if f.is_dir() => f,
+            Some(f) if f.is_dir() || f.is_file() => f,
             _ => { show_error("No folder specified for split compress."); return; }
         };
+
+        // Multiselect coordination — same as regular compress.
+        // Explorer spawns N instances for N selected files; the coordinator collects them.
+        let paths = multiselect::collect_paths(folder.clone());
+        if paths.is_empty() {
+            return; // forwarder, done
+        }
 
         // If --size wasn't given on CLI, show the Slint SplitWindow for input.
         if !has_size {
@@ -440,36 +447,68 @@ fn main() {
             size_mb = app.get_size_text().parse::<u32>().unwrap_or(30).max(1);
         }
 
-        // Compute base dest (folder name, no .zgx extension).
-        let name = folder.file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "Archive".to_string());
-        let dest_base = folder.parent()
-            .map(|p| p.join(&name))
-            .unwrap_or_else(|| PathBuf::from(&name));
-
-        // Overwrite check: scan for ALL existing parts (not just part001).
-        let parent = dest_base.parent().unwrap_or(std::path::Path::new("."));
-        let stale_parts: Vec<PathBuf> = std::fs::read_dir(parent)
-            .into_iter().flatten().flatten()
-            .map(|e| e.path())
-            .filter(|p| {
-                let s = p.file_name().unwrap_or_default().to_string_lossy();
-                s.starts_with(&format!("{}.part", name)) && s.ends_with(".zgx")
-            })
-            .collect();
-        if !stale_parts.is_empty() {
-            if !confirm_overwrite(&stale_parts[0]) { return; }
-            for p in &stale_parts { let _ = std::fs::remove_file(p); }
+        // Single vs multi: same logic as regular compress.
+        if paths.len() == 1 {
+            let f = paths.into_iter().next().unwrap();
+            let name = f.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "Archive".to_string());
+            let dest_base = f.parent()
+                .map(|p| p.join(&name))
+                .unwrap_or_else(|| PathBuf::from(&name));
+            // Overwrite check for split parts.
+            let parent = dest_base.parent().unwrap_or(std::path::Path::new("."));
+            let stale_parts: Vec<PathBuf> = std::fs::read_dir(parent)
+                .into_iter().flatten().flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    let s = p.file_name().unwrap_or_default().to_string_lossy();
+                    s.starts_with(&format!("{}.part", name)) && s.ends_with(".zgx")
+                })
+                .collect();
+            if !stale_parts.is_empty() {
+                if !confirm_overwrite(&stale_parts[0]) { return; }
+                for p in &stale_parts { let _ = std::fs::remove_file(p); }
+            }
+            run_one(
+                "Compressing (Split)".to_string(),
+                Some(format!("{} MB parts", size_mb)),
+                true, dest_base,
+                OpKind::CompressSplit(f, size_mb),
+            );
+        } else {
+            // Multi: archive named after shared parent, placed in that parent.
+            let parent = paths.iter()
+                .filter_map(|p| p.parent().map(|x| x.to_path_buf()))
+                .next()
+                .unwrap_or_else(|| PathBuf::from("."));
+            let label = parent.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "Archive".to_string());
+            let dest_base = parent.join(&label);
+            let op_detail = format!("{} ({} items)", label, paths.len());
+            // Overwrite check.
+            let stale_parts: Vec<PathBuf> = std::fs::read_dir(&parent)
+                .into_iter().flatten().flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    let s = p.file_name().unwrap_or_default().to_string_lossy();
+                    s.starts_with(&format!("{}.part", label)) && s.ends_with(".zgx")
+                })
+                .collect();
+            if !stale_parts.is_empty() {
+                if !confirm_overwrite(&stale_parts[0]) { return; }
+                for p in &stale_parts { let _ = std::fs::remove_file(p); }
+            }
+            // Multi-select split: compress ALL files into ONE split archive.
+            run_one(
+                "Compressing (Split)".to_string(),
+                Some(op_detail),
+                true, dest_base,
+                OpKind::CompressSplitMany(paths, size_mb),
+            );
         }
-
-        run_one(
-            "Compressing (Split)".to_string(),
-            Some(format!("{} MB parts", size_mb)),
-            true,
-            dest_base,
-            OpKind::CompressSplit(folder, size_mb),
-        );
         return;
     }
 
@@ -596,6 +635,7 @@ enum OpKind {
     CompressOne(PathBuf),
     CompressMany(Vec<PathBuf>),
     CompressSplit(PathBuf, u32), // (folder, segment_size_mb)
+    CompressSplitMany(Vec<PathBuf>, u32), // (inputs, segment_size_mb)
 }
 
 fn run_one(op_label: String, op_detail: Option<String>, cancellable: bool, dest: PathBuf, op: OpKind) {
@@ -635,6 +675,11 @@ fn run_one(op_label: String, op_detail: Option<String>, cancellable: bool, dest:
             }
             OpKind::CompressSplit(f, seg_mb) => {
                 let r = compress::compress_folder_split(&f, &dest, seg_mb, &[], &cancel_for_thread);
+                (r.0, if r.1.is_empty() { String::new() } else { r.1.join(", ") })
+            }
+            OpKind::CompressSplitMany(inputs, seg_mb) => {
+                let label = dest.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                let r = compress::compress_paths_split(&inputs, &dest, &label, seg_mb, &cancel_for_thread);
                 (r.0, if r.1.is_empty() { String::new() } else { r.1.join(", ") })
             }
         };
