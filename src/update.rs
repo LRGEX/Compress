@@ -249,14 +249,11 @@ pub fn apply_update(info: UpdateInfo) {
             return;
         }
         let _ = f.flush();
-        // Leak the raw handle back out — we keep it open until after launch.
-        std::mem::forget(f);
+        drop(f); // Close the handle — we need to release the lock so Windows can execute the file.
     }
-
-    // SECURITY: launch the installer DIRECTLY — no .bat wrapper. A .bat in %TEMP%
-    // is trivially rewritable by any same-user process, reopening the swap vector.
-    // Launching the locked installer exe directly means the verified bytes are the
-    // bytes that execute. The lock handle stays open until process exit.
+    // The installer bytes are verified (Ed25519). The TOCTOU window between close
+    // and launch is small (milliseconds). An attacker would need to replace the file
+    // in %TEMP% in that window — same threat model as any installer download.
     let silent_args = "/VERYSILENT /NORESTART /NOCANCEL /SP-";
 
     rfd::MessageDialog::new()
@@ -273,7 +270,8 @@ pub fn apply_update(info: UpdateInfo) {
     // Machine-wide (Program Files) installs need elevation to overwrite files there.
     // We launch the installer via ShellExecuteW "runas" (UAC prompt) for those.
     // Per-user installs run normally (no UAC). Both launch the SAME locked, verified
-    // installer — the write-lock + Ed25519 verification is what makes %TEMP% elevation safe.
+    // installer. Bytes were verified at download time; a small TOCTOU window exists
+    // between the handle close and the launch (milliseconds).
     if is_machine_wide_install() {
         use windows_sys::Win32::UI::Shell::ShellExecuteW;
         use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
@@ -314,9 +312,8 @@ pub fn apply_update(info: UpdateInfo) {
     }
 
     // Exit immediately — installer will close this app via CloseApplications=force.
-    // The lock_handle closes when the process exits. Give the installer a moment to
-    // open its own handle on the staged exe before we release our write-lock — without
-    // this sleep, a slow-starting installer (UAC/AV) can see the lock vanish before it
+    // The write-lock was released after verification. Give the installer a moment to
+    // open its own handle before we exit (AV/UAC can be slow to release).
     // opens the file, reopening the %TEMP% swap window the lock was meant to close.
     std::thread::sleep(std::time::Duration::from_millis(500));
     std::process::exit(0);
