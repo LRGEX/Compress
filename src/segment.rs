@@ -479,4 +479,66 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn compress_paths_split_roundtrip() {
+        use crate::compress;
+        use std::collections::HashSet;
+
+        let tmp = std::env::temp_dir().join(format!("split-multi-rt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        // Create 3 source files with distinct content.
+        let src_dir = tmp.join("sources");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::write(src_dir.join("file1.txt"), b"content of file 1").unwrap();
+        std::fs::write(src_dir.join("file2.txt"), b"content of file 2").unwrap();
+        std::fs::write(src_dir.join("file3.txt"), b"content of file 3").unwrap();
+
+        let inputs = vec![
+            src_dir.join("file1.txt"),
+            src_dir.join("file2.txt"),
+            src_dir.join("file3.txt"),
+        ];
+        let base_dest = tmp.join("MultiSplit");
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+
+        let (ok, skipped) = compress::compress_paths_split(
+            &inputs, &base_dest, "MultiSplit", 1, &cancel,
+        );
+        assert!(ok, "compress_paths_split failed: {:?}", skipped);
+
+        // Verify parts exist.
+        assert!(tmp.join("MultiSplit.part001.zgx").exists(), "part001 not found");
+
+        // Extract via ConcatReader → zstd → tar.
+        let (reader, _total, _sum) = ConcatReader::open_and_verify(&base_dest).unwrap();
+        let decoder = zstd::Decoder::new(reader).unwrap();
+        let mut tar = tar::Archive::new(decoder);
+
+        let dest = tmp.join("extracted");
+        std::fs::create_dir_all(&dest).unwrap();
+
+        let mut found_files = HashSet::new();
+        for entry in tar.entries().unwrap() {
+            let mut entry = entry.unwrap();
+            let path = entry.path().unwrap().to_path_buf();
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            entry.unpack(dest.join(&name)).unwrap();
+            found_files.insert(name);
+        }
+
+        // ALL 3 files must be present — this is the data-loss guard.
+        assert!(found_files.contains("file1.txt"), "file1.txt missing!");
+        assert!(found_files.contains("file2.txt"), "file2.txt missing!");
+        assert!(found_files.contains("file3.txt"), "file3.txt missing!");
+
+        // Content check.
+        assert_eq!(std::fs::read_to_string(dest.join("file1.txt")).unwrap().trim(), "content of file 1");
+        assert_eq!(std::fs::read_to_string(dest.join("file2.txt")).unwrap().trim(), "content of file 2");
+        assert_eq!(std::fs::read_to_string(dest.join("file3.txt")).unwrap().trim(), "content of file 3");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }
