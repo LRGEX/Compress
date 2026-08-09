@@ -337,6 +337,11 @@ fn zip_has_conflicts(archive: &Path, dest: &Path) -> bool {
 
 /// rar: walk the listing.
 fn rar_has_conflicts(archive: &Path, dest: &Path) -> bool {
+    // For multi-volume, always check from part001.
+    let first_part = unrar::Archive::new(archive)
+        .first_part_option()
+        .filter(|p| p != archive && p.exists());
+    let archive: &Path = first_part.as_deref().unwrap_or(archive);
     let list = match unrar::Archive::new(archive).open_for_listing() { Ok(l) => l, Err(_) => return false };
     for item in list {
         if let Ok(e) = item {
@@ -1237,6 +1242,11 @@ fn move_dir_contents(src: &Path, dst: &Path) -> std::io::Result<()> {
 fn rar_totals(archive: &Path) -> (usize, u64) {
     let mut files = 0usize;
     let mut bytes = 0u64;
+    // For multi-volume, always list from part001.
+    let first_part = unrar::Archive::new(archive)
+        .first_part_option()
+        .filter(|p| p != archive && p.exists());
+    let archive: &Path = first_part.as_deref().unwrap_or(archive);
     // Best-effort: walk the listing for sizes. On any read error, return zeros (caller
     // falls back to indeterminate progress). No diagnostic dump to disk in production.
     if let Ok(list) = unrar::Archive::new(archive).open_for_listing() {
@@ -1257,6 +1267,13 @@ fn rar_totals(archive: &Path) -> (usize, u64) {
 /// counter and ticks deltas into Progress. Works for single-file and multi-file archives.
 fn extract_rar(archive: &Path, dest: &Path) -> (bool, String) {
     progress::clear_status();
+    // Multi-volume RAR: if the user right-clicked a continuation part (part025.rar),
+    // redirect to part001 automatically — same as WinRAR. The unrar library can't
+    // navigate backward from a middle part, so always start from part001.
+    let first_part = unrar::Archive::new(archive)
+        .first_part_option()
+        .filter(|p| p != archive && p.exists());
+    let archive: &Path = first_part.as_deref().unwrap_or(archive);
     let label = archive
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
