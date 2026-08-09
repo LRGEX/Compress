@@ -257,11 +257,13 @@ fn show_help() {
     };
     app.set_message(
         "LRGEX Compress — usage:\n\n\
-         lrgex-compress <folder-or-file>     Compress → <name>.zgx\n\
-         lrgex-compress -x <archive>         Extract → <name>\\ folder\n\
-         lrgex-compress -x -h <archive>      Extract here (into the archive's folder)\n\
-         lrgex-compress --split [--size <MB>] <folder>  Compress → split .partNNN.zgx\n\
-         lrgex-compress --help               Show this help\n\n\
+         lrgex-compress <folder-or-file>      Compress → <name>.zgx\n\
+         lrgex-compress -x <archive>          Extract → <name>\\ folder\n\
+         lrgex-compress -x -h <archive>       Extract here (into the archive's folder)\n\
+         lrgex-compress --split [--size <MB>] <folder-or-file>\n\
+                                              Compress → split .partNNN.zgx\n\
+                                              (default 30 MB; GUI prompts if --size omitted)\n\
+         lrgex-compress --help / -h / /?      Show this help\n\n\
          Supported formats:\n\
          • Compress: .zgx (tar + zstd)\n\
          • Extract:  .zgx, .zip, .rar\n\n\
