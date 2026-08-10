@@ -1,4 +1,20 @@
-# Patch Notes - Version 1.5.1 - Current
+# Patch Notes - Version 1.5.2 - Current
+
+## 🔧 Fixes
+
+- Auto-update now works for Program Files installs with UAC disabled (detects elevation, launches directly instead of failing on "runas")
+- Double-click exe shows help instead of silent exit
+- PATH changes broadcast immediately (no reboot needed)
+- Friendly error messages for update failures
+- Removed unnecessary "Signature verified" dialog
+- Installer shows progress during update (/SILENT instead of /VERYSILENT)
+- WM_SETTINGCHANGE broadcast for PATH
+- Choco validExitCodes includes 3010
+- Fixed stale doc comments in update.rs
+
+---
+
+# Patch Notes - Version 1.5.1
 
 ## 🚀 New Features
 

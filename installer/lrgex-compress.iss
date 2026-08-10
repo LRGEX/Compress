@@ -12,7 +12,7 @@
 ; TO COMPILE: "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\lrgex-compress.iss
 
 #define MyAppName      "LRGEX Compress"
-#define MyAppVersion "1.5.1"
+#define MyAppVersion "1.5.2"
 #define MyAppPublisher "LRGEX"
 #define MyAppExeName   "lrgex-compress.exe"
 
@@ -164,7 +164,6 @@ Root: HKA; Subkey: "Software\Classes\LRGEX.ContextMenus\LRGEX\shell\extractHere\
 const
   SHCNE_ASSOCCHANGED = $08000000;
   SHCNF_IDLIST = $0000;
-  HWND_BROADCAST = $FFFF;
   WM_SETTINGCHANGE = $001A;
 
 procedure SHChangeNotify(wEventId: Integer; uFlags: Integer; dwItem1: Longint; dwItem2: Longint);

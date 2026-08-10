@@ -278,30 +278,55 @@ pub fn apply_update(info: UpdateInfo) {
     // installer. Bytes were verified at download time; a small TOCTOU window exists
     // between the handle close and the launch (milliseconds).
     if is_machine_wide_install() {
-        use windows_sys::Win32::UI::Shell::ShellExecuteW;
-        use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
-        let verb: Vec<u16> = "runas\0".encode_utf16().collect();
-        let file: Vec<u16> = (temp_installer.to_string_lossy().to_string() + "\0").encode_utf16().collect();
-        let params: Vec<u16> = (silent_args.to_string() + "\0").encode_utf16().collect();
-        let hinst = unsafe {
-            ShellExecuteW(
-                std::ptr::null_mut(),
-                verb.as_ptr(),
-                file.as_ptr(),
-                params.as_ptr(),
-                std::ptr::null(),
-                SW_HIDE,
-            )
-        };
-        // ShellExecuteW returns HINSTANCE <= 32 on error (e.g. ERROR_CANCELLED if UAC
-        // denied). If launch failed, clean up the staged installer so we don't leave a
-        // locked orphan in %TEMP%, and tell the user.
-        if (hinst as usize) <= 32 {
-            let _ = std::fs::remove_file(&temp_installer);
-            show_error("Update was cancelled or failed to launch. No changes were made.");
-            return;
+        let is_elevated = is_process_elevated();
+        if is_elevated {
+            use std::os::windows::process::CommandExt;
+            match std::process::Command::new(&temp_installer)
+                .args(silent_args.split_whitespace())
+                .creation_flags(0x08000000u32)
+                .spawn()
+            {
+                Ok(_) => {}
+                Err(e) => {
+                    log_update_issue(&format!("installer launch (direct) failed: {}", e));
+                    let _ = std::fs::remove_file(&temp_installer);
+                    show_error("The update couldn't be launched. Please try downloading it manually from GitHub Releases.");
+                    return;
+                }
+            }
+        } else {
+            use windows_sys::Win32::UI::Shell::ShellExecuteW;
+            use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
+            let verb: Vec<u16> = "runas\0".encode_utf16().collect();
+            let file: Vec<u16> = (temp_installer.to_string_lossy().to_string() + "\0").encode_utf16().collect();
+            let params: Vec<u16> = (silent_args.to_string() + "\0").encode_utf16().collect();
+            let hinst = unsafe {
+                ShellExecuteW(
+                    std::ptr::null_mut(),
+                    verb.as_ptr(),
+                    file.as_ptr(),
+                    params.as_ptr(),
+                    std::ptr::null(),
+                    SW_HIDE,
+                )
+            };
+            let last_err = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+            if (hinst as usize) <= 32 {
+                log_update_issue(&format!(
+                    "ShellExecuteW runas failed: HINSTANCE={}, GetLastError={}",
+                    hinst as isize, last_err));
+                let _ = std::fs::remove_file(&temp_installer);
+                let msg = if last_err == 1223 {
+                    "Update was cancelled — you denied the admin permission prompt. Try again and click Yes."
+                } else {
+                    "The update couldn't be launched. Please try downloading it manually from GitHub Releases."
+                };
+                show_error(msg);
+                return;
+            }
         }
     } else {
+        use std::os::windows::process::CommandExt;
         match std::process::Command::new(&temp_installer)
             .args(silent_args.split_whitespace())
             .creation_flags(0x08000000u32)
@@ -317,10 +342,6 @@ pub fn apply_update(info: UpdateInfo) {
         }
     }
 
-    // Exit immediately — installer will close this app via CloseApplications=force.
-    // The write-lock was released after verification. Give the installer a moment to
-    // open its own handle before we exit (AV/UAC can be slow to release).
-    // opens the file, reopening the %TEMP% swap window the lock was meant to close.
     std::thread::sleep(std::time::Duration::from_millis(500));
     std::process::exit(0);
 }
@@ -374,6 +395,30 @@ fn log_update_issue(reason: &str) {
 }
 
 /// Detect if the running exe is installed under %ProgramFiles% (machine-wide).
+/// Detect if the running exe is elevated (admin / UAC disabled).
+fn is_process_elevated() -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::Security::{
+        GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    unsafe {
+        let mut token: HANDLE = std::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return false;
+        }
+        let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
+        let mut ret_len = 0u32;
+        let ok = GetTokenInformation(
+            token, TokenElevation,
+            &mut elevation as *mut _ as *mut std::ffi::c_void,
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32, &mut ret_len,
+        );
+        CloseHandle(token);
+        ok != 0 && elevation.TokenIsElevated != 0
+    }
+}
+
 /// Case-insensitive path comparison — Windows paths are case-insensitive.
 /// Checks both %ProgramFiles% (64-bit) and %ProgramFiles(x86)% (32-bit).
 fn is_machine_wide_install() -> bool {
