@@ -39,6 +39,7 @@ struct ProgressInner {
     started: Instant,
     stop: AtomicBool,
     label: Mutex<String>,
+    error_msg: Mutex<String>,
     path: PathBuf,
 }
 
@@ -55,6 +56,7 @@ impl Progress {
                 started: Instant::now(),
                 stop: AtomicBool::new(false),
                 label: Mutex::new(label.to_string()),
+                error_msg: Mutex::new(String::new()),
                 path: status_path(),
             }),
         }
@@ -72,6 +74,19 @@ impl Progress {
     /// Number of files that could not be read/archived (shown as a warning, not a failure).
     pub fn set_skipped(&self, n: usize) {
         self.inner.skipped.store(n, Ordering::Relaxed);
+    }
+
+    /// Set the error message (shown in the GUI when phase=4).
+    pub fn set_error(&self, msg: &str) {
+        if let Ok(mut g) = self.inner.error_msg.lock() {
+            *g = msg.to_string();
+        }
+    }
+
+    /// Convenience: set error message + finish(4) in one call.
+    pub fn fail(&self, msg: &str) {
+        self.set_error(msg);
+        self.finish(4);
     }
 
     /// Tick bytes only (no file count) — for streaming progress within large files
@@ -98,13 +113,15 @@ impl Progress {
             0
         };
         let label = self.inner.label.lock().map(|g| g.clone()).unwrap_or_default();
+        let error_msg = self.inner.error_msg.lock().map(|g| g.clone()).unwrap_or_default();
         let skipped = self.inner.skipped.load(Ordering::Relaxed);
         format!(
-            "{{\"heartbeat\":{},\"pid\":{},\"phase\":{},\"label\":{},\"files_done\":{},\"files_total\":{},\"bytes_done\":{},\"bytes_total\":{},\"skipped\":{},\"elapsed\":{:.1},\"rate\":{:.1},\"eta\":{}}}",
+            "{{\"heartbeat\":{},\"pid\":{},\"phase\":{},\"label\":{},\"error_msg\":{},\"files_done\":{},\"files_total\":{},\"bytes_done\":{},\"bytes_total\":{},\"skipped\":{},\"elapsed\":{:.1},\"rate\":{:.1},\"eta\":{}}}",
             now_secs(),
             pid,
             self.inner.phase.load(Ordering::Relaxed),
             serde_json::to_string(&label).unwrap_or_else(|_| "\"\"".into()),
+            serde_json::to_string(&error_msg).unwrap_or_else(|_| "\"\"".into()),
             done,
             total,
             bdone,
@@ -186,6 +203,8 @@ impl<R: Read> Read for ByteReader<R> {
 pub struct Status {
     pub phase: usize,
     pub label: String,
+    #[serde(default)]
+    pub error_msg: String,
     pub files_done: usize,
     pub files_total: usize,
     pub bytes_done: u64,

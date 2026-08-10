@@ -235,13 +235,14 @@ fn discover_parts(parent: &Path, stem: &str) -> io::Result<Vec<PathBuf>> {
         }
     }
     found.sort_by_key(|(num, _)| *num);
-    // Contiguity check: no gaps allowed.
-    for (idx, (num, _)) in found.iter().enumerate() {
-        let expected = idx as u32 + 1;
-        if *num != expected {
-            return Err(io::Error::new(io::ErrorKind::NotFound,
-                format!("Part {:03} is missing", expected)));
-        }
+    // Contiguity check: report ALL missing parts, not just the first.
+    let max_num = found.last().map(|(n, _)| *n).unwrap_or(0);
+    let present: std::collections::HashSet<u32> = found.iter().map(|(n, _)| *n).collect();
+    let missing: Vec<u32> = (1..=max_num).filter(|n| !present.contains(n)).collect();
+    if !missing.is_empty() {
+        let names: Vec<String> = missing.iter().map(|n| format!("{:03}", n)).collect();
+        return Err(io::Error::new(io::ErrorKind::NotFound,
+            format!("Parts {} are missing", names.join(", "))));
     }
     Ok(found.into_iter().map(|(_, p)| p).collect())
 }
@@ -567,6 +568,65 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dest.join("file1.txt")).unwrap().trim(), "content of file 1");
         assert_eq!(std::fs::read_to_string(dest.join("file2.txt")).unwrap().trim(), "content of file 2");
         assert_eq!(std::fs::read_to_string(dest.join("file3.txt")).unwrap().trim(), "content of file 3");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn discover_parts_reports_all_missing() {
+        let tmp = std::env::temp_dir().join(format!("discover-missing-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        // Create only parts 001 and 004 — 002 and 003 are missing.
+        std::fs::write(tmp.join("MyArchive.part001.zgx"), b"x").unwrap();
+        std::fs::write(tmp.join("MyArchive.part004.zgx"), b"x").unwrap();
+
+        let result = discover_parts(&tmp, "MyArchive");
+        assert!(result.is_err(), "should detect missing parts");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("002"), "should mention part 002: {}", err);
+        assert!(err.contains("003"), "should mention part 003: {}", err);
+        assert!(!err.contains("001"), "should NOT mention existing part 001: {}", err);
+        assert!(!err.contains("004"), "should NOT mention existing part 004: {}", err);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn discover_parts_single_gap() {
+        let tmp = std::env::temp_dir().join(format!("discover-single-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        // Parts 001, 002, 004 — only 003 missing.
+        std::fs::write(tmp.join("Data.part001.zgx"), b"x").unwrap();
+        std::fs::write(tmp.join("Data.part002.zgx"), b"x").unwrap();
+        std::fs::write(tmp.join("Data.part004.zgx"), b"x").unwrap();
+
+        let result = discover_parts(&tmp, "Data");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("003"), "should mention part 003: {}", err);
+        assert!(!err.contains("001"), "should NOT mention existing parts: {}", err);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn discover_parts_contiguous_ok() {
+        let tmp = std::env::temp_dir().join(format!("discover-ok-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        // All parts present — should succeed.
+        std::fs::write(tmp.join("Ok.part001.zgx"), b"x").unwrap();
+        std::fs::write(tmp.join("Ok.part002.zgx"), b"x").unwrap();
+        std::fs::write(tmp.join("Ok.part003.zgx"), b"x").unwrap();
+
+        let result = discover_parts(&tmp, "Ok");
+        assert!(result.is_ok(), "contiguous parts should succeed: {:?}", result.err());
+        assert_eq!(result.unwrap().len(), 3);
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

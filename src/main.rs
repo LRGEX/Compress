@@ -767,7 +767,13 @@ fn run_one(op_label: String, op_detail: Option<String>, cancellable: bool, dest:
                 } else if s.phase == 4 {
                     app.set_indeterminate(false);
                     app.set_done(true);
-                    app.set_result("Failed".into());
+                    // Show the actual error message, not just 'Failed'.
+                    let result_text = if s.error_msg.is_empty() {
+                        "Failed".to_string()
+                    } else {
+                        s.error_msg
+                    };
+                    app.set_result(result_text.into());
                     app.set_result_color(slint::Color::from_rgb_u8(0xf4, 0x43, 0x36));
                     // No auto-close on failure — user needs to read the error.
                 } else if s.phase == 5 {

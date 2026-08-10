@@ -1057,6 +1057,7 @@ fn extract_split_zgx(archive: &Path, dest: &Path) -> (bool, String) {
     let (reader, header_total, data_sum) = match crate::segment::ConcatReader::open_and_verify(&base) {
         Ok(r) => r,
         Err(e) => {
+            prog.set_error(&e.to_string());
             prog.finish(4);
             let _ = heartbeat.join();
             return (false, e.to_string());
@@ -1071,7 +1072,9 @@ fn extract_split_zgx(archive: &Path, dest: &Path) -> (bool, String) {
     let buf_reader = std::io::BufReader::with_capacity(256 * 1024, reader);
     let decoder = match zstd::Decoder::new(buf_reader) {
         Ok(d) => d,
-        Err(e) => { prog.finish(4); let _ = heartbeat.join(); return (false, format!("zstd: {}", e)); }
+        Err(e) => {
+            prog.set_error(&format!("zstd: {}", e));
+            prog.finish(4); let _ = heartbeat.join(); return (false, format!("zstd: {}", e)); }
     };
     let counting = ByteReader::new(decoder, prog.clone());
     let buf = std::io::BufReader::with_capacity(256 * 1024, counting);
