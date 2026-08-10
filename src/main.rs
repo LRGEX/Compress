@@ -52,9 +52,11 @@ slint::slint! {
         icon: @image-url("../assets/logo.png");
         background: #1e1e1e;
         preferred-width: 440px;
-        preferred-height: 180px;
+        preferred-height: 200px;
+        min-width: 440px;
+        min-height: 200px;
         max-width: 440px;
-        max-height: 180px;
+        max-height: 200px;
 
         in property <string> op-label: "Working";
         in property <string> op-detail: "";
@@ -175,13 +177,13 @@ slint::slint! {
             }
         }
 
-        // Version badge in the lower right corner
+        // Version badge — top right, never overlaps buttons
         Text {
             text: root.version-text;
             color: #555555;
             font-size: 10px;
             x: parent.width - self.width - 8px;
-            y: parent.height - self.height - 24px;
+            y: 8px;
         }
     }
 
@@ -564,7 +566,7 @@ fn main() {
                 return; // user clicked No — abort
             }
         }
-        run_one(op_label, Some(op_detail), false, dest, OpKind::Extract(archive));
+        run_one(op_label, Some(op_detail), true, dest, OpKind::Extract(archive));
         return;
     }
 
@@ -646,8 +648,6 @@ enum OpKind {
 }
 
 fn run_one(op_label: String, op_detail: Option<String>, cancellable: bool, dest: PathBuf, op: OpKind) {
-    let is_extract = matches!(op, OpKind::Extract(_));
-
     let app = match ProgressWindow::new() {
         Ok(a) => a,
         Err(e) => {
@@ -659,7 +659,7 @@ fn run_one(op_label: String, op_detail: Option<String>, cancellable: bool, dest:
     app.set_op_detail(op_detail.unwrap_or_default().into());
     app.set_version_text(format!("v{}", env!("CARGO_PKG_VERSION")).into());
 
-    app.set_cancellable(cancellable && !is_extract); // Cancel is available during compress only.
+    app.set_cancellable(cancellable); // Cancel available for both compress and extract.
 
     let cancel = Arc::new(AtomicBool::new(false));
 
@@ -670,7 +670,7 @@ fn run_one(op_label: String, op_detail: Option<String>, cancellable: bool, dest:
         // silently killing the worker thread (which would leave the GUI hanging).
         let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let result = match op {
-            OpKind::Extract(a) => extract::extract_archive(&a, &dest),
+            OpKind::Extract(a) => extract::extract_archive(&a, &dest, &cancel_for_thread),
             OpKind::CompressOne(f) => {
                 let r = compress::compress_folder(&f, &dest, &[], &cancel_for_thread);
                 (r.0, if r.1.is_empty() { String::new() } else { r.1.join(", ") })

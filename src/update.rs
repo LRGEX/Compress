@@ -16,6 +16,7 @@ const UPDATE_PUBKEY_HEX: &str = include_str!("../signing.pub");
 
 use serde::Deserialize;
 use std::io::Read;
+use std::os::windows::process::CommandExt;
 use ed25519_dalek::{VerifyingKey, Verifier, Signature};
 
 const MANIFEST_URL: &str = "https://download.lrgex.com/app/rst/lrgex-compress/latest.json";

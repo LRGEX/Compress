@@ -13,6 +13,7 @@
 // process exits. If no, remaining links are skipped silently. One prompt, ever.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::progress::{self, ByteReader, Progress};
 
@@ -202,10 +203,19 @@ fn lexical_normalize(p: &Path) -> PathBuf {
 struct ZipCountingReader<'a, R: std::io::Read> {
     inner: &'a mut R,
     prog: &'a Progress,
+    cancel: Option<&'a AtomicBool>,
 }
 
 impl<'a, R: std::io::Read> std::io::Read for ZipCountingReader<'a, R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if let Some(cancel) = self.cancel {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "LRGEX_CANCELLED",
+                ));
+            }
+        }
         let n = self.inner.read(buf)?;
         if n > 0 {
             self.prog.tick_bytes(n as u64);
@@ -261,15 +271,15 @@ fn detect_format(path: &Path) -> Option<Format> {
 }
 
 /// Top-level dispatcher. Routes to the right handler by detected format.
-pub fn extract_archive(archive: &Path, dest: &Path) -> (bool, String) {
+pub fn extract_archive(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (bool, String) {
     // Split .zgx detection FIRST (by filename pattern) — before magic-byte detect.
     if crate::segment::parse_split_part(archive).is_some() {
-        return extract_split_zgx(archive, dest);
+        return extract_split_zgx(archive, dest, cancel);
     }
     match detect_format(archive) {
-        Some(Format::Zgx) => extract_zgx(archive, dest),
-        Some(Format::Zip) => extract_zip(archive, dest),
-        Some(Format::Rar) => extract_rar(archive, dest),
+        Some(Format::Zgx) => extract_zgx(archive, dest, cancel),
+        Some(Format::Zip) => extract_zip(archive, dest, cancel),
+        Some(Format::Rar) => extract_rar(archive, dest, cancel),
         None => (false, "Unrecognized archive format".to_string()),
     }
 }
@@ -362,7 +372,7 @@ fn rar_has_conflicts(archive: &Path, dest: &Path) -> bool {
 }
 
 /// .zgx = tar + zstd. Byte-counting via ByteReader so the heartbeat tracks bytes.
-fn extract_zgx(archive: &Path, dest: &Path) -> (bool, String) {
+fn extract_zgx(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (bool, String) {
     progress::clear_status();
     let label = archive
         .file_name()
@@ -441,12 +451,12 @@ fn extract_zgx(archive: &Path, dest: &Path) -> (bool, String) {
             return (false, format!("corrupt archive (zstd): {}", e));
         }
     };
-    let counting = ByteReader::new(decoder, prog.clone());
+    let counting = ByteReader::with_cancel(decoder, prog.clone(), cancel);
     let buf_decoder = std::io::BufReader::with_capacity(256 * 1024, counting);
     let mut tar = tar::Archive::new(buf_decoder);
 
     let _ = std::fs::create_dir_all(dest);
-    let result = extract_zgx_inner(&mut tar, dest);
+    let result = extract_zgx_inner(&mut tar, dest, cancel);
 
     match result {
         ZgxOutcome::Done(skipped) => {
@@ -456,12 +466,14 @@ fn extract_zgx(archive: &Path, dest: &Path) -> (bool, String) {
             (true, String::new())
         }
         ZgxOutcome::ElevatedRelaunched => {
-            // We re-launched as admin; the elevated process takes over and writes the
-            // terminal phase. Set stop via finish(3) FIRST so the heartbeat writer's
-            // `while !stop` loop exits and join() returns — otherwise join hangs forever.
             prog.finish(3);
             let _ = heartbeat.join();
             std::process::exit(0);
+        }
+        ZgxOutcome::Cancelled => {
+            prog.finish(5);
+            let _ = heartbeat.join();
+            (true, String::new())
         }
         ZgxOutcome::Failed(e) => {
             prog.finish(4);
@@ -472,8 +484,9 @@ fn extract_zgx(archive: &Path, dest: &Path) -> (bool, String) {
 }
 
 enum ZgxOutcome {
-    Done(usize), // carries the count of skipped symlinks (0 = perfect extract)
-    ElevatedRelaunched, // re-launched as admin; current process must exit
+    Done(usize),
+    Cancelled,
+    ElevatedRelaunched,
     Failed(String),
 }
 
@@ -509,7 +522,7 @@ fn parse_sidecar(body: &[u8]) -> std::collections::HashMap<std::path::PathBuf, (
     m
 }
 
-fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path) -> ZgxOutcome {
+fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path, cancel: &AtomicBool) -> ZgxOutcome {
     use rayon::prelude::*;
     use std::io::Read;
     use std::path::{Component, PathBuf};
@@ -685,6 +698,9 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path) -
     let mut first_checked = false;
 
     for entry in entries {
+        if cancel.load(Ordering::Relaxed) {
+            return ZgxOutcome::Cancelled;
+        }
         let mut entry = match entry {
             Ok(e) => e,
             Err(e) => return ZgxOutcome::Failed(format!("entry read: {}", e)),
@@ -880,6 +896,10 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path) -
             let mut remaining = size as usize;
             let mut skip_file = false; // set on recoverable error → skip flush+rename
             loop {
+                if cancel.load(Ordering::Relaxed) {
+                    let _ = std::fs::remove_file(&tmp);
+                    return ZgxOutcome::Cancelled;
+                }
                 if remaining == 0 { break; }
                 let want = remaining.min(chunk.len());
                 let n = match entry.read(&mut chunk[..want]) {
@@ -1043,7 +1063,7 @@ fn zip_mtime_to_epoch(dt: zip::DateTime) -> Option<u64> {
 
 /// Split .zgx extraction: chains parts via ConcatReader, verifies SHA256 trailers,
 /// then feeds to the existing zstd::Decoder → tar::Archive → extract_zgx_inner.
-fn extract_split_zgx(archive: &Path, dest: &Path) -> (bool, String) {
+fn extract_split_zgx(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (bool, String) {
     progress::clear_status();
     let label = archive.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
     let prog = Progress::new(&label);
@@ -1076,14 +1096,14 @@ fn extract_split_zgx(archive: &Path, dest: &Path) -> (bool, String) {
             prog.set_error(&format!("zstd: {}", e));
             prog.finish(4); let _ = heartbeat.join(); return (false, format!("zstd: {}", e)); }
     };
-    let counting = ByteReader::new(decoder, prog.clone());
+    let counting = ByteReader::with_cancel(decoder, prog.clone(), cancel);
     let buf = std::io::BufReader::with_capacity(256 * 1024, counting);
     let mut tar = tar::Archive::new(buf);
 
     // Create dest before extracting (extract_zgx_inner assumes it exists).
     let _ = std::fs::create_dir_all(dest);
 
-    let result = extract_zgx_inner(&mut tar, dest);
+    let result = extract_zgx_inner(&mut tar, dest, cancel);
 
     match result {
         ZgxOutcome::Done(skipped) => {
@@ -1110,6 +1130,11 @@ fn extract_split_zgx(archive: &Path, dest: &Path) -> (bool, String) {
             prog.finish(3);
             let _ = heartbeat.join();
             std::process::exit(0);
+        }
+        ZgxOutcome::Cancelled => {
+            prog.finish(5);
+            let _ = heartbeat.join();
+            (true, String::new())
         }
         ZgxOutcome::Failed(e) => {
             prog.finish(4);
@@ -1153,7 +1178,7 @@ fn split_has_conflicts(archive: &Path, dest: &Path) -> bool {
 /// mode if present), and symlinks (target stored as entry data — zip convention).
 /// Zip does NOT carry CreationTime or Windows-specific attributes, so those aren't
 /// restored (nothing to restore — we don't strip anything that's actually there).
-fn extract_zip(archive: &Path, dest: &Path) -> (bool, String) {
+fn extract_zip(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (bool, String) {
     progress::clear_status();
     let label = archive
         .file_name()
@@ -1184,6 +1209,9 @@ fn extract_zip(archive: &Path, dest: &Path) -> (bool, String) {
         // links (those aren't lost). Surfaced via set_skipped before Ok(()).
         let mut skipped_links: usize = 0;
         for i in 0..za.len() {
+            if cancel.load(Ordering::Relaxed) {
+                return Err("__LRGEX_CANCEL__".to_string());
+            }
             let mut entry = za.by_index(i).map_err(|e| format!("entry {}: {}", i, e))?;
             // zip-slip guard: enclosed_name() returns a sanitized path or None for unsafe
             // names (e.g. containing `..` or absolute paths). Skip those entirely.
@@ -1201,8 +1229,8 @@ fn extract_zip(archive: &Path, dest: &Path) -> (bool, String) {
                     std::fs::create_dir_all(parent).map_err(|e| format!("mkdir parent: {}", e))?;
                 }
                 let mut target = Vec::with_capacity(entry.size() as usize);
-                let mut counting = ZipCountingReader { inner: &mut entry, prog: &prog };
-                std::io::Read::read_to_end(&mut counting, &mut target).map_err(|e| format!("read link {}: {}", rel.display(), e))?;
+                let mut counting = ZipCountingReader { inner: &mut entry, prog: &prog, cancel: Some(cancel) };
+                std::io::Read::read_to_end(&mut counting, &mut target).map_err(|e| format!("read link {}: {}", rel.display(), e))?;;
                 let target = String::from_utf8_lossy(&target).trim_end_matches(['\0', '\r', '\n']).to_string();
                 // Validate the TARGET so a crafted zip can't create a link pointing
                 // outside the destination.
@@ -1261,7 +1289,7 @@ fn extract_zip(archive: &Path, dest: &Path) -> (bool, String) {
                 let tmp = extract_temp_path(&outpath);
                 let mut guard = PartialFile::new(tmp.clone());
                 let outf = std::fs::File::create(&tmp).map_err(|e| format!("create {}: {}", rel.display(), e))?;
-                let mut counting = ZipCountingReader { inner: &mut entry, prog: &prog };
+                let mut counting = ZipCountingReader { inner: &mut entry, prog: &prog, cancel: Some(cancel) };
                 let mut bw = std::io::BufWriter::new(&outf);
                 let write_res = std::io::copy(&mut counting, &mut bw).map_err(|e| format!("write {}: {}", rel.display(), e));
                 drop(bw);
@@ -1320,9 +1348,15 @@ fn extract_zip(archive: &Path, dest: &Path) -> (bool, String) {
             (true, String::new())
         }
         Err(e) => {
-            prog.finish(4);
+            let was_cancelled = cancel.load(Ordering::Relaxed);
+            if was_cancelled {
+                prog.finish(5);
+            } else {
+                prog.set_error(&e);
+                prog.finish(4);
+            }
             let _ = heartbeat.join();
-            (false, e)
+            if was_cancelled { (true, String::new()) } else { (false, e) }
         }
     }
 }
@@ -1377,7 +1411,7 @@ fn rar_totals(archive: &Path) -> (usize, u64) {
 /// .rar — via the vendored `unrar` crate with UCM_PROCESSDATA counter patch.
 /// Real sub-file progress: a 100ms sampler thread reads the global processed-bytes
 /// counter and ticks deltas into Progress. Works for single-file and multi-file archives.
-fn extract_rar(archive: &Path, dest: &Path) -> (bool, String) {
+fn extract_rar(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (bool, String) {
     progress::clear_status();
     // Multi-volume RAR: if the user right-clicked a continuation part (part025.rar),
     // redirect to part001 automatically — same as WinRAR. The unrar library can't
@@ -1462,13 +1496,19 @@ fn extract_rar(archive: &Path, dest: &Path) -> (bool, String) {
             }
         }
         std::fs::create_dir_all(&staging).map_err(|e| format!("staging mkdir: {}", e))?;
-        let mut staging_guard = StagingDir::new(staging.clone());
+        let mut staging_guard = Some(StagingDir::new(staging.clone()));
 
         let extract_ok = (|| -> Result<(), String> {
             let mut open = unrar::Archive::new(archive)
                 .open_for_processing()
                 .map_err(|e| e.to_string())?;
             loop {
+                if cancel.load(Ordering::Relaxed) {
+                    // Explicit cleanup BEFORE returning — GUI may process::exit on phase 5.
+                    let _ = std::fs::remove_dir_all(&staging);
+                    if let Some(g) = staging_guard.take() { std::mem::forget(g); }
+                    return Err("cancelled".to_string());
+                }
                 match open.read_header().map_err(|e| e.to_string())? {
                     None => break,
                     Some(with_header) => {
@@ -1493,13 +1533,13 @@ fn extract_rar(archive: &Path, dest: &Path) -> (bool, String) {
         // remove_dir_all doesn't fire, write a recovery README, and surface a loud error.
         match move_dir_contents(&staging, dest) {
             Ok(()) => {
-                staging_guard.disarm(); // moves succeeded — staging dir is now empty
+                if let Some(mut g) = staging_guard.take() { g.disarm(); }
                 let _ = std::fs::remove_dir_all(&staging);
                 Ok(())
             }
             Err(e) => {
                 // Prevent the StagingDir Drop from deleting the recovery files.
-                std::mem::forget(staging_guard);
+                if let Some(g) = staging_guard.take() { std::mem::forget(g); }
                 let _ = std::fs::write(staging.join("RECOVERY-README.txt"),
                     "LRGEX Compress could not move some files into the destination.\r\n\
                      Files already moved are in the destination; files still in this\r\n\
@@ -1512,11 +1552,17 @@ fn extract_rar(archive: &Path, dest: &Path) -> (bool, String) {
     sampler_stop.store(true, std::sync::atomic::Ordering::Relaxed);
     let _ = sampler.join();
 
-    prog.finish(if result.is_ok() { 3 } else { 4 });
+    let cancelled = result.is_err() && cancel.load(Ordering::Relaxed);
+    if cancelled {
+        prog.finish(5);
+    } else {
+        prog.finish(if result.is_ok() { 3 } else { 4 });
+    }
     let _ = heartbeat.join();
 
     match result {
         Ok(()) => (true, String::new()),
+        Err(e) if cancelled => (true, String::new()),
         Err(e) => (false, e),
     }
 }
@@ -1553,7 +1599,7 @@ mod tests {
         // — i.e. dest.parent().join("evil.txt"). Asserting THAT path doesn't exist proves
         // the guard works (checking only inside `dest` would be a false pass).
         let dest = tmp.join("out");
-        let (ok, msg) = extract_archive(&zip_path, &dest);
+        let (ok, msg) = extract_archive(&zip_path, &dest, &std::sync::atomic::AtomicBool::new(false));
         assert!(ok, "zip extract failed: {}", msg);
 
         // Safe entry present + correct content.
@@ -1589,7 +1635,7 @@ mod tests {
         }
 
         let dest = tmp.join("out");
-        let (ok, msg) = extract_archive(&zip_path, &dest);
+        let (ok, msg) = extract_archive(&zip_path, &dest, &std::sync::atomic::AtomicBool::new(false));
         assert!(ok, "extract failed: {}", msg);
 
         // The final file exists.
@@ -1726,7 +1772,7 @@ mod tests {
         // Pre-seed with OLD bytes — this is the file that will be overwritten.
         std::fs::write(dest.join("target.txt"), b"OLD CONTENT THAT MUST BE REPLACED").unwrap();
 
-        let (ok, msg) = extract_archive(&zip_path, &dest);
+        let (ok, msg) = extract_archive(&zip_path, &dest, &std::sync::atomic::AtomicBool::new(false));
         assert!(ok, "extract failed: {}", msg);
 
         // Final content is the NEW bytes from the archive.
@@ -1766,7 +1812,7 @@ mod tests {
         }
 
         let dest = tmp.join("out");
-        let (ok, msg) = extract_archive(&zip_path, &dest);
+        let (ok, msg) = extract_archive(&zip_path, &dest, &std::sync::atomic::AtomicBool::new(false));
         assert!(ok, "extract failed: {}", msg);
 
         // ALL four files must exist with their DISTINCT original content. If the temp
