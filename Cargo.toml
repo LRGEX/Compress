@@ -1,6 +1,6 @@
 [package]
 name = "lrgex_compress"
-version = "1.5.3"
+version = "1.6.0"
 edition = "2021"
 description = "LRGEX Compress — standalone fast .tar.zst compressor/extractor"
 
@@ -39,7 +39,7 @@ windows-sys = { version = "0.59", features = [
 ] }
 unrar = "0.5"
 zip = { version = "8", default-features = false, features = ["deflate-flate2-zlib-ng", "deflate64", "bzip2", "zstd", "lzma", "time", "aes-crypto"] }
-
+sevenz-rust2 = "0.7"
 [build-dependencies]
 winres = "0.1"
 

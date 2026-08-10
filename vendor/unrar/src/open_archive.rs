@@ -3,10 +3,14 @@ use super::*;
 use std::fmt;
 use std::os::raw::{c_int, c_uint};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicBool, Ordering};
 
 /// LRGEX: bytes reported by UCM_PROCESSDATA across the current operation.
 pub static PROCESSED_BYTES: AtomicU64 = AtomicU64::new(0);
+
+/// LRGEX: cancel flag — checked in UCM_PROCESSDATA callback for instant abort.
+/// Safe because LRGEX only ever extracts ONE archive at a time (single GUI instance).
+pub static CANCEL_FLAG: AtomicBool = AtomicBool::new(false);
 
 pub fn processed_bytes() -> u64 {
     PROCESSED_BYTES.load(Ordering::Relaxed)
@@ -14,6 +18,16 @@ pub fn processed_bytes() -> u64 {
 
 pub fn reset_processed() {
     PROCESSED_BYTES.store(0, Ordering::Relaxed);
+}
+
+/// LRGEX: set the cancel flag so the next UCM_PROCESSDATA chunk returns -1 → ERAR_ECLOSE.
+pub fn set_cancel() {
+    CANCEL_FLAG.store(true, Ordering::SeqCst);
+}
+
+/// LRGEX: clear the cancel flag. Call in finally / after extraction completes.
+pub fn clear_cancel() {
+    CANCEL_FLAG.store(false, Ordering::SeqCst);
 }
 use std::ptr::NonNull;
 
@@ -541,6 +555,11 @@ impl<M: ProcessMode> Internal<M> {
                 }
             }
             native::UCM_PROCESSDATA => {
+                // LRGEX: instant cancel — return -1 aborts extraction immediately
+                // (RARProcessFileW returns ERAR_ECLOSE on next chunk boundary).
+                if CANCEL_FLAG.load(Ordering::SeqCst) {
+                    return -1;
+                }
                 let n = if p2 > 0 { p2 as u64 } else { 0 };
                 let _total = PROCESSED_BYTES.fetch_add(n, Ordering::Relaxed) + n;
                 let raw_slice = std::ptr::slice_from_raw_parts(p1 as *const u8, p2 as _);

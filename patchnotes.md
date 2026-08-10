@@ -1,4 +1,26 @@
-# Patch Notes - Version 1.5.3 - Current
+# Patch Notes - Version 1.6.0 - Current
+
+## ✨ New Features
+
+- **7z extraction**: `.7z` archives now supported (LZMA2, pure Rust)
+  - Single-volume `.7z` — instant extraction with progress
+  - Multi-volume `.7z.001/.002/...` — extract from ANY part (auto-redirects to `.001`)
+  - Per-chunk cancel (stops mid-file, not just between files)
+  - Overwrite confirmation (header-only read, no decompression needed)
+  - Path-traversal guard (zip-slip protection)
+  - Right-click `.7z` and `.001` → LRGEX → Extract
+
+## 🔧 Fixes
+
+- **Instant RAR cancel**: Cancel now stops RAR extraction mid-file (within 100ms)
+  via UCM_PROCESSDATA callback abort — no more waiting for the current file to finish
+- **Clean archive names**: `video.mp4` → `video.zgx` (extension stripped)
+  - Folders unchanged (`myfolder` → `myfolder.zgx`)
+  - Dotfiles preserved (`.git` → `.git.zgx`)
+
+---
+
+# Patch Notes - Version 1.5.3
 
 ## ✨ New Features
 

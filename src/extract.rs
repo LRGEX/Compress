@@ -226,9 +226,10 @@ impl<'a, R: std::io::Read> std::io::Read for ZipCountingReader<'a, R> {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Format {
-    Zgx, // tar + zstd
+    Zgx,    // tar + zstd
     Zip,
     Rar,
+    SevenZ, // .7z (LZMA2)
 }
 
 /// Detect format from the first bytes of the file. Falls back to extension.
@@ -250,6 +251,10 @@ fn detect_format(path: &Path) -> Option<Format> {
             if head[0..4] == [0x28, 0xb5, 0x2f, 0xfd] {
                 return Some(Format::Zgx);
             }
+            // 7z — "7z\xbc\xaf\x27\x1c" (6-byte signature).
+            if head.len() >= 6 && head[0..6] == [0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c] {
+                return Some(Format::SevenZ);
+            }
             // LRGEX magic — "LRGEX" (new .zgx format with magic header).
             if head.len() >= 5 && &head[0..5] == b"LRGEX" {
                 return Some(Format::Zgx);
@@ -266,6 +271,7 @@ fn detect_format(path: &Path) -> Option<Format> {
         Some("zgx") | Some("zst") => Some(Format::Zgx),
         Some("zip") => Some(Format::Zip),
         Some("rar") => Some(Format::Rar),
+        Some("7z") => Some(Format::SevenZ),
         _ => None,
     }
 }
@@ -276,10 +282,16 @@ pub fn extract_archive(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (boo
     if crate::segment::parse_split_part(archive).is_some() {
         return extract_split_zgx(archive, dest, cancel);
     }
+    // Multi-volume 7z detection by filename pattern (.7z.NNN) — before magic-byte
+    // detect, because only .7z.001 has the signature and extension() returns "NNN".
+    if is_sevenz_volume_part(archive) {
+        return extract_7z(archive, dest, cancel);
+    }
     match detect_format(archive) {
         Some(Format::Zgx) => extract_zgx(archive, dest, cancel),
         Some(Format::Zip) => extract_zip(archive, dest, cancel),
         Some(Format::Rar) => extract_rar(archive, dest, cancel),
+        Some(Format::SevenZ) => extract_7z(archive, dest, cancel),
         None => (false, "Unrecognized archive format".to_string()),
     }
 }
@@ -293,6 +305,10 @@ pub fn has_conflicts(archive: &Path, dest: &Path) -> bool {
     if crate::segment::parse_split_part(archive).is_some() {
         return split_has_conflicts(archive, dest);
     }
+    // Multi-volume 7z: route to sevenz_has_conflicts (handles part redirect).
+    if is_sevenz_volume_part(archive) {
+        return sevenz_has_conflicts(archive, dest);
+    }
     // NOTE: we deliberately do NOT fast-path on empty/non-existent dest. A file could
     // appear in the window between an empty check and the extract. Always scan the
     // archive contents so the prompt fires for any real conflict. (For a genuinely
@@ -301,6 +317,7 @@ pub fn has_conflicts(archive: &Path, dest: &Path) -> bool {
         Some(Format::Zgx) => zgx_has_conflicts(archive, dest),
         Some(Format::Zip) => zip_has_conflicts(archive, dest),
         Some(Format::Rar) => rar_has_conflicts(archive, dest),
+        Some(Format::SevenZ) => sevenz_has_conflicts(archive, dest),
         None => false,
     }
 }
@@ -1434,17 +1451,28 @@ fn extract_rar(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (bool, Strin
 
     // Sub-file progress via the vendored UCM_PROCESSDATA counter.
     unrar::reset_processed();
+    unrar::clear_cancel();
     let sampler_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // Spawn the sampler thread with a raw pointer to the cancel flag. This is safe
+    // because `cancel` outlives the thread — we join it below before returning.
+    let cancel_ptr = cancel as *const std::sync::atomic::AtomicBool as usize;
     let sampler = {
         let prog = prog.clone();
         let stop = sampler_stop.clone();
         std::thread::spawn(move || {
+            let cancel_ref = unsafe { &(cancel_ptr as *const std::sync::atomic::AtomicBool).as_ref().unwrap() };
             let mut last: u64 = 0;
             loop {
                 let now = unrar::processed_bytes();
                 if now > last {
                     prog.tick_bytes(now - last);
                     last = now;
+                }
+                // LRGEX: forward our cancel flag to unrar's UCM_PROCESSDATA hook.
+                // Once set, the next decompressed chunk returns -1 → ERAR_ECLOSE →
+                // extract_with_base returns Err → between-file check catches it.
+                if cancel_ref.load(std::sync::atomic::Ordering::Relaxed) {
+                    unrar::set_cancel();
                 }
                 if stop.load(std::sync::atomic::Ordering::Relaxed) {
                     break; // one final sample above, then exit
@@ -1551,6 +1579,7 @@ fn extract_rar(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (bool, Strin
 
     sampler_stop.store(true, std::sync::atomic::Ordering::Relaxed);
     let _ = sampler.join();
+    unrar::clear_cancel();
 
     let cancelled = result.is_err() && cancel.load(Ordering::Relaxed);
     if cancelled {
@@ -1565,6 +1594,327 @@ fn extract_rar(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (bool, Strin
         Err(e) if cancelled => (true, String::new()),
         Err(e) => (false, e),
     }
+}
+
+/// Detect multi-volume 7z part by filename: "*.7z.NNN" (digits).
+/// Returns true for .7z.001, .7z.004, etc. (single-volume .7z returns false).
+pub(crate) fn is_sevenz_volume_part(path: &Path) -> bool {
+    let name = match path.file_name().and_then(|n| n.to_str()) {
+        Some(n) => n,
+        None => return false,
+    };
+    if let Some(pos) = name.rfind(".7z.") {
+        let suffix = &name[pos + 4..];
+        !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit())
+    } else {
+        false
+    }
+}
+
+/// Multi-volume 7z redirect: if the user right-clicked file.7z.NNN (any part),
+/// return the path to file.7z.001 (the first part). Returns None for plain .7z
+/// or non-7z files. (Split 7z archives have NO plain .7z — first part is .7z.001.)
+fn sevenz_first_part(archive: &Path) -> Option<PathBuf> {
+    // Match "*.7z.NNN" where NNN is digits and not "001".
+    let name = archive.file_name()?.to_str()?;
+    // Must end with .7z.<digits>
+    if let Some(pos) = name.rfind(".7z.") {
+        let suffix = &name[pos + 4..]; // the digits after ".7z."
+        if !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit()) && suffix != "001" {
+            let base = &name[..pos]; // everything before ".7z.NNN"
+            let first = format!("{}.7z.001", base);
+            let first_path = archive.with_file_name(first);
+            if first_path.exists() {
+                return Some(first_path);
+            }
+        }
+    }
+    None
+}
+
+/// .7z — via the `sevenz-rust2` crate (pure Rust, LZMA2).
+fn extract_7z(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (bool, String) {
+    progress::clear_status();
+
+    // Multi-volume 7z: parts are named file.7z.001, file.7z.002, ...
+    // (there is NO plain file.7z — the first part is .7z.001).
+    //
+    // Two entry points:
+    //   (a) User right-clicked .7z.NNN where NNN != 001 → redirect to .7z.001
+    //       via sevenz_first_part(), then collect all parts.
+    //   (b) User right-clicked .7z.001 directly → check if .7z.002 exists;
+    //       if yes, multi-volume; if no, single-volume.
+    let start = sevenz_first_part(archive).unwrap_or_else(|| archive.to_path_buf());
+    let name = start.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+    // Is this a .7z.NNN file? (Either .001 directly, or redirected from .NNN.)
+    if let Some(pos) = name.rfind(".7z.") {
+        let suffix = &name[pos + 4..];
+        if !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit()) {
+            // Collect all parts starting from .001.
+            let base = &name[..pos];
+            // Find the .001 part.
+            let first_name = format!("{}.7z.001", base);
+            let first_path = start.with_file_name(&first_name);
+            if first_path.exists() {
+                let mut parts: Vec<PathBuf> = vec![];
+                let mut idx = 1u32;
+                loop {
+                    let part_name = format!("{}.7z.{:03}", base, idx);
+                    let part_path = start.with_file_name(part_name);
+                    if part_path.exists() {
+                        parts.push(part_path);
+                        idx += 1;
+                    } else {
+                        break;
+                    }
+                }
+                if parts.len() > 1 {
+                    // Multi-volume — concat all parts into one stream.
+                    return extract_7z_multi(&parts, dest, cancel, name.to_string());
+                }
+                // Only .001 exists, no .002 — treat as single-volume.
+                return extract_7z_single(&first_path, dest, cancel, name.to_string());
+            }
+        }
+    }
+
+    // Plain .7z (single volume).
+    let label = archive
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    extract_7z_single(archive, dest, cancel, label)
+}
+
+/// Multi-volume 7z — concat all parts (.001/.002/...) into a temp file, then
+/// decompress that single file. Simpler and more reliable than a custom
+/// cross-part Read+Seek adapter (7z's header lives at EOF, so any boundary
+/// bug dooms it).
+fn extract_7z_multi(parts: &[PathBuf], dest: &Path, cancel: &AtomicBool, label: String) -> (bool, String) {
+    let prog = Progress::new(&label);
+    let heartbeat = prog.spawn_writer();
+    prog.set_phase(0);
+
+    // Total work = concat (read all parts) + decompress (write all files).
+    // Both phases read/write roughly the compressed size, so total = 2× compressed.
+    // This keeps the progress bar coherent: 0-50% concat, 50-100% decompress.
+    let compressed_size: u64 = parts.iter()
+        .filter_map(|p| std::fs::metadata(p).ok())
+        .map(|m| m.len())
+        .sum();
+    prog.set_totals(0, compressed_size * 2);
+
+    prog.set_phase(1);
+
+    // Concat all parts into a temp file in the SYSTEM temp dir (avoids path-with-
+    // space issues in the archive's parent folder, and ensures space on the system drive).
+    let temp_dir = std::env::temp_dir();
+    let tmp_file = temp_dir.join(format!("lrgex-7z-concat-{}.tmp", std::process::id()));
+    let prog_concat = prog.clone();
+    let result = (|| -> Result<(), String> {
+        {
+            let mut out = std::fs::File::create(&tmp_file)
+                .map_err(|e| format!("create concat temp: {}", e))?;
+            use std::io::{Read, Write};
+            for (i, part) in parts.iter().enumerate() {
+                if cancel.load(Ordering::Relaxed) {
+                    return Err("cancelled".to_string());
+                }
+                let mut f = std::fs::File::open(part)
+                    .map_err(|e| format!("open part {}: {}", i + 1, e))?;
+                // Buffered copy with progress ticking (first 50% of the bar).
+                let mut buf = [0u8; 1048576];
+                loop {
+                    let n = f.read(&mut buf)
+                        .map_err(|e| format!("concat read part {}: {}", i + 1, e))?;
+                    if n == 0 { break; }
+                    out.write_all(&buf[..n])
+                        .map_err(|e| format!("concat write part {}: {}", i + 1, e))?;
+                    prog_concat.tick_bytes(n as u64);
+                }
+            }
+            out.sync_all().map_err(|e| format!("sync: {}", e))?;
+        }
+
+        // Decompress the concatenated single file.
+        let prog_arc = prog.clone();
+        let dest_buf = dest.to_path_buf();
+        sevenz_rust2::decompress_file_with_extract_fn(
+            &tmp_file,
+            dest,
+            move |entry, rdr, out_path| -> Result<bool, sevenz_rust2::Error> {
+                if cancel.load(Ordering::Relaxed) {
+                    return Ok(false);
+                }
+                if !out_path.starts_with(&dest_buf) {
+                    return Ok(true);
+                }
+                if entry.is_directory() {
+                    std::fs::create_dir_all(out_path)
+                        .map_err(|e| sevenz_rust2::Error::Other(format!("mkdir: {}", e).into()))?;
+                } else {
+                    if let Some(parent) = out_path.parent() {
+                        std::fs::create_dir_all(parent)
+                            .map_err(|e| sevenz_rust2::Error::Other(format!("mkdir: {}", e).into()))?;
+                    }
+                    let mut out = std::fs::File::create(out_path)
+                        .map_err(|e| sevenz_rust2::Error::Other(format!("create: {}", e).into()))?;
+                    let mut buf = [0u8; 65536];
+                    loop {
+                        if cancel.load(Ordering::Relaxed) {
+                            return Ok(false);
+                        }
+                        use std::io::{Read, Write};
+                        let n = rdr.read(&mut buf)
+                            .map_err(|e| sevenz_rust2::Error::Other(format!("read: {}", e).into()))?;
+                        if n == 0 { break; }
+                        out.write_all(&buf[..n])
+                            .map_err(|e| sevenz_rust2::Error::Other(format!("write: {}", e).into()))?;
+                        prog_arc.tick_bytes(n as u64);
+                    }
+                }
+                Ok(true)
+            },
+        ).map_err(|e| format!("7z: {}", e))?;
+        Ok(())
+    })();
+
+    // ALWAYS clean up the temp file, even on cancel/failure.
+    let _ = std::fs::remove_file(&tmp_file);
+
+    let cancelled = result.is_err() && cancel.load(Ordering::Relaxed);
+    if cancelled {
+        prog.finish(5);
+    } else {
+        prog.finish(if result.is_ok() { 3 } else { 4 });
+    }
+    let _ = heartbeat.join();
+
+    match result {
+        Ok(()) => (true, String::new()),
+        Err(e) if cancelled => (true, String::new()),
+        Err(e) => (false, e),
+    }
+}
+
+fn extract_7z_single(archive: &Path, dest: &Path, cancel: &AtomicBool, label: String) -> (bool, String) {
+    progress::clear_status();
+    let prog = Progress::new(&label);
+    let heartbeat = prog.spawn_writer();
+    prog.set_phase(0);
+    // Set total = archive file size, so the progress bar is determinate.
+    let total = std::fs::metadata(archive).map(|m| m.len()).unwrap_or(0);
+    prog.set_totals(0, total);
+    prog.set_phase(1);
+
+    // sevenz-rust2's per-entry callback fires for every entry. It hands us the
+    // computed destination path (already joined to `dest`), so we just validate
+    // it stays inside `dest` (path-traversal guard) and copy bytes with progress.
+    // Returning Ok(false) aborts early (our cancel signal); Err aborts with error.
+    //
+    // The callback is synchronous (no 'static bound), so capturing `cancel: &AtomicBool`
+    // by move is safe and needs no unsafe pointer tricks.
+    let prog_arc = prog.clone();
+    let dest_buf = dest.to_path_buf();
+
+    let result = sevenz_rust2::decompress_file_with_extract_fn(
+        archive,
+        dest,
+        move |entry, reader, out_path| -> Result<bool, sevenz_rust2::Error> {
+            // Cancel check — between files.
+            if cancel.load(Ordering::Relaxed) {
+                return Ok(false); // stop extraction
+            }
+
+            // Path-traversal guard — reject anything escaping `dest`.
+            if !out_path.starts_with(&dest_buf) {
+                return Ok(true); // skip this entry, keep going
+            }
+
+            if entry.is_directory() {
+                std::fs::create_dir_all(out_path)
+                    .map_err(|e| sevenz_rust2::Error::Other(format!("mkdir: {}", e).into()))?;
+            } else {
+                if let Some(parent) = out_path.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| sevenz_rust2::Error::Other(format!("mkdir: {}", e).into()))?;
+                }
+                let mut out = std::fs::File::create(out_path)
+                    .map_err(|e| sevenz_rust2::Error::Other(format!("create: {}", e).into()))?;
+                let mut buf = [0u8; 65536];
+                loop {
+                    if cancel.load(Ordering::Relaxed) {
+                        return Ok(false);
+                    }
+                    use std::io::{Read, Write};
+                    let n = reader.read(&mut buf)
+                        .map_err(|e| sevenz_rust2::Error::Other(format!("read: {}", e).into()))?;
+                    if n == 0 { break; }
+                    out.write_all(&buf[..n])
+                        .map_err(|e| sevenz_rust2::Error::Other(format!("write: {}", e).into()))?;
+                    prog_arc.tick_bytes(n as u64);
+                }
+            }
+            Ok(true) // keep going
+        },
+    );
+
+    let result = result.map_err(|e| e.to_string());
+    let cancelled = result.is_err() && cancel.load(Ordering::Relaxed);
+
+    if cancelled {
+        prog.finish(5);
+    } else {
+        prog.finish(if result.is_ok() { 3 } else { 4 });
+    }
+    let _ = heartbeat.join();
+
+    match result {
+        Ok(()) => (true, String::new()),
+        Err(e) if cancelled => (true, String::new()),
+        Err(e) => (false, e),
+    }
+}
+
+/// 7z conflict check — walk entry names from the 7z archive.
+fn sevenz_has_conflicts(archive: &Path, dest: &Path) -> bool {
+    let dest = match dest.canonicalize() {
+        Ok(d) => d,
+        Err(_) => return false,
+    };
+
+    // For multi-volume 7z, skip the upfront conflict check — reading the header
+    // would require concatenating all parts (1-2 GB copy) just to list names,
+    // which is too slow for a pre-extract prompt. Single .7z reads the header
+    // instantly (no concat). Multi-volume users don't get the upfront prompt
+    // (same trade-off as RAR for multi-volume).
+    if is_sevenz_volume_part(archive) {
+        return false;
+    }
+    let read_path = archive.to_path_buf();
+    let _temp_to_clean: Option<PathBuf> = None;
+
+    // Header-only read: get the file listing WITHOUT decompressing.
+    // Archive::open parses the header/entry table without extracting file data.
+    let archive_data = match sevenz_rust2::Archive::open(&read_path) {
+        Ok(a) => a,
+        Err(_) => {
+            if let Some(t) = &_temp_to_clean { let _ = std::fs::remove_file(t); }
+            return false;
+        }
+    };
+
+    let mut conflict = false;
+    for entry in archive_data.files.iter() {
+        let name = entry.name();
+        if name.contains("..") || name.starts_with('/') || name.starts_with('\\') { continue; }
+        let p = dest.join(name);
+        if p.exists() { conflict = true; break; }
+    }
+
+    if let Some(t) = &_temp_to_clean { let _ = std::fs::remove_file(t); }
+    conflict
 }
 
 #[cfg(test)]

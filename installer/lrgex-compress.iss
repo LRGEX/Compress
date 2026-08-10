@@ -7,12 +7,13 @@
 ;   right-click a FOLDER -> "LRGEX" -> hover -> "Compress" / "Split Compress" -> folder.zgx
 ;   right-click any FILE  -> "LRGEX" -> hover -> "Compress"                  -> file.zgx
 ;   right-click a .zgx    -> "LRGEX" -> hover -> "Extract"                    -> <name>\ folder
+;   right-click a .zip/.rar/.7z -> "LRGEX" -> hover -> "Extract" (SystemFileAssociations — doesn't steal ownership)
 ;   (double-click a .zgx also extracts)
 ;
 ; TO COMPILE: "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\lrgex-compress.iss
 
 #define MyAppName      "LRGEX Compress"
-#define MyAppVersion "1.5.3"
+#define MyAppVersion "1.6.0"
 #define MyAppPublisher "LRGEX"
 #define MyAppExeName   "lrgex-compress.exe"
 
@@ -145,7 +146,29 @@ Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.rar\shell\LRGEX"; \
 Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.rar\shell\LRGEX"; \
     ValueType: string; ValueName: "ExtendedSubCommandsKey"; ValueData: "LRGEX.ContextMenus\LRGEX"
 
-; Shared submenu used by both .zip and .rar above.
+Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.7z\shell\LRGEX"; \
+    ValueType: string; ValueName: ""; ValueData: "LRGEX"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.7z\shell\LRGEX"; \
+    ValueType: string; ValueName: "MUIVerb"; ValueData: "LRGEX"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.7z\shell\LRGEX"; \
+    ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName},0"
+Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.7z\shell\LRGEX"; \
+    ValueType: string; ValueName: "ExtendedSubCommandsKey"; ValueData: "LRGEX.ContextMenus\LRGEX"
+
+; .7z.001 — first part of a multi-volume 7z archive. We register ONLY the first
+; part (users right-click the first part to extract, same as WinRAR/7-Zip workflow).
+; The exe's is_sevenz_multi_volume_filename() guards against non-7z .001 files:
+; if the filename doesn't contain ".7z." we show a clean "not a 7z archive" message.
+Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.001\shell\LRGEX"; \
+    ValueType: string; ValueName: ""; ValueData: "LRGEX"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.001\shell\LRGEX"; \
+    ValueType: string; ValueName: "MUIVerb"; ValueData: "LRGEX"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.001\shell\LRGEX"; \
+    ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName},0"
+Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.001\shell\LRGEX"; \
+    ValueType: string; ValueName: "ExtendedSubCommandsKey"; ValueData: "LRGEX.ContextMenus\LRGEX"
+
+; Shared submenu used by .zip, .rar, .7z, and .7z.001 above.
 Root: HKA; Subkey: "Software\Classes\LRGEX.ContextMenus\LRGEX"; Flags: uninsdeletekey
 Root: HKA; Subkey: "Software\Classes\LRGEX.ContextMenus\LRGEX\shell\extract"; \
     ValueType: string; ValueName: ""; ValueData: "Extract"; Flags: uninsdeletekey

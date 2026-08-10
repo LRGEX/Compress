@@ -272,7 +272,7 @@ fn show_help() {
          lrgex-compress --help / -h / /?      Show this help\n\n\
          Supported formats:\n\
          • Compress: .zgx (tar + zstd)\n\
-         • Extract:  .zgx, .zip, .rar\n\n\
+         • Extract:  .zgx, .zip, .rar, .7z\n\n\
          Or right-click any file/folder in Explorer."
             .into());
     app.on_close_clicked(|| {
@@ -291,6 +291,32 @@ fn show_error(msg: &str) {
         let _ = slint::quit_event_loop();
     });
     let _ = app.run();
+}
+
+/// Is this a multi-volume 7z part filename? (file.7z.NNN where NNN is digits)
+fn is_sevenz_multi_volume_filename(path: &std::path::Path) -> bool {
+    let name = match path.file_name().and_then(|n| n.to_str()) {
+        Some(n) => n,
+        None => return false,
+    };
+    if let Some(pos) = name.rfind(".7z.") {
+        let suffix = &name[pos + 4..];
+        !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit())
+    } else {
+        false
+    }
+}
+
+/// For a multi-volume 7z part (file.7z.NNN), compute the dest folder base name:
+/// strip ".7z.NNN" → just the base (e.g. "test" not "test.7z").
+fn sevenz_multi_dest_base(path: &std::path::Path) -> PathBuf {
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("archive");
+    if let Some(pos) = name.rfind(".7z.") {
+        parent.join(&name[..pos])
+    } else {
+        path.with_extension("")
+    }
 }
 
 /// WinRAR-style overwrite confirmation. If the destination archive already exists,
@@ -547,6 +573,9 @@ fn main() {
         } else if let Some((base, _)) = crate::segment::parse_split_part(&archive) {
             // Split archive: strip .partNNN.zgx → base name (e.g. "src" not "src.part001").
             base
+        } else if is_sevenz_multi_volume_filename(&archive) {
+            // Multi-volume 7z: strip .7z.NNN → base name (e.g. "test" not "test.7z").
+            sevenz_multi_dest_base(&archive)
         } else {
             archive.with_extension("")
         };
@@ -598,18 +627,18 @@ fn main() {
     // Single vs. multi.
     if paths.len() == 1 {
         let f = paths.into_iter().next().unwrap();
-        let is_dir = f.is_dir();
         let raw_name = f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        // For folders, strip the last .ext from the name (x.md → x). Guard against
-        // dot-prefixed folders (.git, .vscode) and names that would become empty.
-        let name = if is_dir {
+        // Strip the last extension from the name for both files and folders:
+        //   video.mp4  → video        (file: strip the extension)
+        //   folder     → folder        (dir: no extension to strip, stays as-is)
+        //   .git       → .git          (dotfile: preserved by the starts_with('.') guard)
+        //   x          → x             (no extension: stays as-is)
+        let name = {
             let stem = PathBuf::from(&raw_name);
             match stem.file_stem().and_then(|s| s.to_str()) {
                 Some(s) if !s.is_empty() && !raw_name.starts_with('.') => s.to_string(),
                 _ => raw_name.clone(),
             }
-        } else {
-            raw_name.clone()
         };
         let op_label = "Compressing".to_string();
         let op_detail = raw_name;

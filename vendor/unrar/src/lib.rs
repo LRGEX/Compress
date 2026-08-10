@@ -13,4 +13,4 @@ pub use open_archive::{
     VolumeInfo,
 };
 
-pub use open_archive::{processed_bytes, reset_processed};
+pub use open_archive::{processed_bytes, reset_processed, set_cancel, clear_cancel};
