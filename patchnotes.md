@@ -4,7 +4,8 @@
 
 - **7z extraction**: `.7z` archives now supported (LZMA2, pure Rust)
   - Single-volume `.7z` — instant extraction with progress
-  - Multi-volume `.7z.001/.002/...` — extract from ANY part (auto-redirects to `.001`)
+  - Multi-volume `.7z.001/.002/...` — right-click `.001` or `.7z` to extract
+  - Extraction handles any part (redirects to `.001` automatically)
   - Per-chunk cancel (stops mid-file, not just between files)
   - Overwrite confirmation (header-only read, no decompression needed)
   - Path-traversal guard (zip-slip protection)
