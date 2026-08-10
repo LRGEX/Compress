@@ -169,6 +169,10 @@ slint::slint! {
                 font-size: 14px;
                 horizontal-alignment: center;
             }
+            if root.done : Button {
+                text: "Close";
+                clicked => { root.close-clicked(); }
+            }
         }
 
         // Version badge in the lower right corner
@@ -761,6 +765,7 @@ fn run_one(op_label: String, op_detail: Option<String>, cancellable: bool, dest:
                         let _ = slint::quit_event_loop();
                     });
                 } else if s.phase == 4 {
+                    app.set_indeterminate(false);
                     app.set_done(true);
                     app.set_result("Failed".into());
                     app.set_result_color(slint::Color::from_rgb_u8(0xf4, 0x43, 0x36));
@@ -811,7 +816,17 @@ fn run_one(op_label: String, op_detail: Option<String>, cancellable: bool, dest:
     drop(update_timer);
     let _ = auto_close_clone.load(Ordering::Relaxed);
     let _ = op_handle.join();
+
+    // Check final status — exit non-zero on failure/cancel so CLI callers can tell.
+    let final_phase = progress::read_status()
+        .map(|s| s.phase)
+        .unwrap_or(0);
     let _ = std::fs::remove_file(progress::status_path());
+
+    if final_phase == 4 || final_phase == 5 {
+        // Failed or cancelled — skip update prompt, exit non-zero.
+        std::process::exit(1);
+    }
 
     // Now the operation is finished and the window is closed — safe to run the heavy
     // update flow. apply_update exits the process on success, returns normally on No/failure.
