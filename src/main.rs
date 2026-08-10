@@ -712,7 +712,7 @@ fn run_one(op_label: String, op_detail: Option<String>, cancellable: bool, dest:
             if !already_terminal {
                 progress::clear_status();
                 let prog = progress::Progress::new("");
-                prog.finish(4); // error
+                prog.fail(&result.1); // set error message + finish(4)
             }
         }
     });
