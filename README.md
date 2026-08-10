@@ -122,6 +122,10 @@ lrgex-compress --help                # show usage
 - Windows 10/11
 - ~20 MB free disk space
 
+> **MSVCP140.dll missing?** Older versions (≤1.4.1) required the Visual C++ runtime.
+> Install it from Microsoft: https://aka.ms/vc14/vc_redist.x64.exe
+> (Version 1.4.4+ uses a static CRT — no runtime needed.)
+
 ## `.zgx` file format
 
 A `.zgx` file is a `tar.zst` archive (tar stream compressed with zstd) with a small
