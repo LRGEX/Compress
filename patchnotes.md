@@ -26,6 +26,9 @@
 - Multi-volume RAR crash fixed (unrar callback)
 - Crash handler added (VEH writes backtrace to crash-log.txt)
 - `--help` flag added
+- "Don't ask again" for declined updates (per-version skip)
+- Temp files use unique names to prevent collisions between same-name files
+- Archive bit and other Windows attributes preserved exactly on round-trip
 
 ---
 
