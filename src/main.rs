@@ -189,6 +189,7 @@ slint::slint! {
 
     export component ErrorWindow inherits Window {
         title: "LRGEX Compress";
+        icon: @image-url("../assets/logo.png");
         background: #1e1e1e;
         preferred-width: 380px;
         preferred-height: 130px;
