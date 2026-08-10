@@ -57,6 +57,38 @@ pub struct UpdateInfo {
 pub fn check_version_only() -> Option<UpdateInfo> {
     let current = env!("CARGO_PKG_VERSION");
 
+    // Throttle: only check once per day. Prevents 20s hangs on every right-click
+    // when the network is down or the server is unreachable.
+    let last_check_path = std::env::var("LOCALAPPDATA")
+        .ok()
+        .map(|d| std::path::PathBuf::from(d).join("LRGEX Compress").join("last-update-check.txt"));
+    if let Some(ref path) = last_check_path {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            if let Ok(last) = content.trim().parse::<u64>() {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                if now - last < 86400 {
+                    // Checked within the last 24 hours — skip.
+                    return None;
+                }
+            }
+        }
+    }
+
+    // Write the check timestamp NOW — before any network I/O. Covers EVERY exit path.
+    if let Some(ref path) = last_check_path {
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(path, now_secs.to_string());
+    }
+
     // Fetch the manifest body as RAW bytes (NOT via into_string which decodes→re-encodes
     // and could alter bytes if the charset isn't UTF-8). We verify the signature over
     // the exact transport bytes — same principle as the detached-sig decision.
@@ -136,9 +168,11 @@ pub fn check_version_only() -> Option<UpdateInfo> {
 
     // "Don't ask again": if the user previously declined THIS version, skip silently.
     // A newer version will prompt again (different version string = different marker).
+    // 30-day expiry: re-ask even the declined version after 30 days.
     if is_update_declined(&manifest.version) {
         return None;
     }
+
 
     Some(UpdateInfo {
         version: manifest.version,
@@ -270,13 +304,6 @@ pub fn apply_update(info: UpdateInfo) {
     // consented in the "Update now?" prompt. No extra click needed.
     // F-U6 fix: /SILENT (not /VERYSILENT) so a progress window shows during install.
 
-    use std::os::windows::process::CommandExt;
-
-    // Machine-wide (Program Files) installs need elevation to overwrite files there.
-    // We launch the installer via ShellExecuteW "runas" (UAC prompt) for those.
-    // Per-user installs run normally (no UAC). Both launch the SAME locked, verified
-    // installer. Bytes were verified at download time; a small TOCTOU window exists
-    // between the handle close and the launch (milliseconds).
     if is_machine_wide_install() {
         let is_elevated = is_process_elevated();
         if is_elevated {
@@ -296,7 +323,7 @@ pub fn apply_update(info: UpdateInfo) {
             }
         } else {
             use windows_sys::Win32::UI::Shell::ShellExecuteW;
-            use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
+            use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
             let verb: Vec<u16> = "runas\0".encode_utf16().collect();
             let file: Vec<u16> = (temp_installer.to_string_lossy().to_string() + "\0").encode_utf16().collect();
             let params: Vec<u16> = (silent_args.to_string() + "\0").encode_utf16().collect();
@@ -307,7 +334,7 @@ pub fn apply_update(info: UpdateInfo) {
                     file.as_ptr(),
                     params.as_ptr(),
                     std::ptr::null(),
-                    SW_HIDE,
+                    SW_SHOWNORMAL,
                 )
             };
             let last_err = unsafe { windows_sys::Win32::Foundation::GetLastError() };
@@ -326,7 +353,6 @@ pub fn apply_update(info: UpdateInfo) {
             }
         }
     } else {
-        use std::os::windows::process::CommandExt;
         match std::process::Command::new(&temp_installer)
             .args(silent_args.split_whitespace())
             .creation_flags(0x08000000u32)
@@ -467,37 +493,58 @@ fn is_newer(remote: &str, current: &str) -> bool {
     false
 }
 
-/// "Don't ask again" — per-version skip.
-/// When the user clicks "No" on the update prompt, save the version they declined.
-/// Next launch, if the remote version matches the declined version, skip silently.
-/// A newer version (different version string) prompts again.
-/// Stored in %LOCALAPPDATA%\LRGEX Compress\declined_update.txt (just the version string).
+/// "Don't ask again" — per-version skip with 30-day expiry.
+/// When the user clicks "No" on the update prompt, save the version + timestamp.
+/// Next launch, if the remote version matches AND it's within 30 days, skip silently.
+/// After 30 days, re-ask even for the same version.
+/// A newer version (different version string) always prompts immediately.
+/// Format: "version\ntimestamp_seconds\"
 fn declined_update_path() -> Option<std::path::PathBuf> {
     std::env::var("LOCALAPPDATA")
         .ok()
         .map(|d| std::path::PathBuf::from(d).join("LRGEX Compress").join("declined_update.txt"))
 }
 
-/// Check if the user previously declined this exact version.
+const DECLINE_EXPIRY_SECS: u64 = 30 * 86400; // 30 days
+
+/// Check if the user previously declined this exact version (within 30 days).
 fn is_update_declined(version: &str) -> bool {
     match declined_update_path() {
         Some(path) => {
             match std::fs::read_to_string(&path) {
-                Ok(content) => content.trim() == version,
-                Err(_) => false, // file doesn't exist or unreadable → not declined
+                Ok(content) => {
+                    let mut parts = content.trim().split('\n');
+                    let saved_version = parts.next().unwrap_or("");
+                    let saved_time: u64 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+                    if saved_version != version {
+                        return false; // different version → always ask
+                    }
+                    // Same version — check 30-day expiry.
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    now.saturating_sub(saved_time) < DECLINE_EXPIRY_SECS
+                }
+                Err(_) => false,
             }
         }
-        None => false, // no LOCALAPPDATA → can't persist → always ask
+        None => false,
     }
 }
 
 /// Mark a version as declined (user clicked "No").
+/// Writes "version\ntimestamp" so the 30-day expiry can be checked.
 fn mark_update_declined(version: &str) {
     if let Some(path) = declined_update_path() {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let _ = std::fs::write(&path, version);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let _ = std::fs::write(&path, format!("{}\n{}", version, now));
     }
 }
 
