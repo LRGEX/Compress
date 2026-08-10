@@ -1,4 +1,33 @@
-# Patch Notes - Version 1.5.2 - Current
+# Patch Notes - Version 1.5.3 - Current
+
+## ✨ New Features
+
+- **Extract Cancel**: Cancel button now works during extraction (all formats)
+  - .zgx/.zip: cancel mid-file (byte-level)
+  - .rar: cancel between files (C library limitation)
+  - Split: cancel during SHA256 verification
+  - All formats: shows "Cancelled" (amber) + exits cleanly
+- **Split Compress**: multi-volume .zgx archives
+  - Right-click → LRGEX → Split Compress
+  - Per-part SHA256 trailers for integrity
+  - Missing parts detected upfront with clear message
+
+## 🔧 Fixes
+
+- Auto-update elevation: detects admin/UAC-disabled correctly (is_process_elevated)
+- Update throttle: once per day (prevents 20s hangs on every launch)
+- Declined update: 30-day expiry (re-asks after 30 days)
+- GUI failure state: shows actual error message + Close button
+- Exit code: non-zero on failure/cancel
+- Progress bar stops animating on Failed
+- Version badge moved to top-right (no overlap with buttons)
+- Window fixed size (cannot resize)
+- Friendly error messages for update failures
+- /SILENT shows progress during update
+
+---
+
+# Patch Notes - Version 1.5.2
 
 ## 🔧 Fixes
 
