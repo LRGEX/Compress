@@ -13,7 +13,7 @@ $packageArgs = @{
   checksumType64 = 'sha256'
   softwareName   = 'LRGEX Compress*'
   silentArgs     = '/VERYSILENT /NORESTART /NOCANCEL /SP- /ALLUSERS'
-  validExitCodes = @(0)
+  validExitCodes = @(0, 3010)
 }
 
 Install-ChocolateyPackage @packageArgs

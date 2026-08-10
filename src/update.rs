@@ -51,8 +51,9 @@ pub struct UpdateInfo {
 /// On network error, logs the failure to a local file (Finding #3: update-channel
 /// observability) and returns None — never blocks or prompts.
 ///
-/// If the app is installed under %ProgramFiles% (machine-wide/choco/winget),
-/// self-update is BLOCKED for safety. The user is told to use choco/winget instead.
+/// Auto-update works for ALL install types (per-user AND machine-wide/Program Files).
+/// For Program Files installs, apply_update() launches the installer elevated (UAC
+/// prompt) so it can overwrite the machine-wide copy.
 pub fn check_version_only() -> Option<UpdateInfo> {
     let current = env!("CARGO_PKG_VERSION");
 
@@ -401,7 +402,7 @@ fn is_machine_wide_install() -> bool {
     false
 }
 
-/// Tell the user to update via their package manager (non-blocking dialog).
+/// Compare two version strings (e.g. "1.5.1" vs "1.4.4"). Returns true if remote is newer.
 fn is_newer(remote: &str, current: &str) -> bool {
     let parse = |s: &str| -> Vec<u32> {
         s.split('.').filter_map(|n| n.parse().ok()).collect()
