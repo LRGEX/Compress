@@ -164,9 +164,22 @@ Root: HKA; Subkey: "Software\Classes\LRGEX.ContextMenus\LRGEX\shell\extractHere\
 const
   SHCNE_ASSOCCHANGED = $08000000;
   SHCNF_IDLIST = $0000;
+  HWND_BROADCAST = $FFFF;
+  WM_SETTINGCHANGE = $001A;
 
 procedure SHChangeNotify(wEventId: Integer; uFlags: Integer; dwItem1: Longint; dwItem2: Longint);
 external 'SHChangeNotify@shell32.dll stdcall';
+
+// F-U4 fix: broadcast WM_SETTINGCHANGE so new terminals pick up PATH immediately.
+procedure SendMessageTimeoutA(hwnd: Longint; msg: Longint; wParam: Longint; lParam: AnsiString; fuFlags: Longint; uTimeout: Longint; var lpdwResult: Longint);
+external 'SendMessageTimeoutA@user32.dll stdcall';
+
+procedure BroadcastEnvironmentChange();
+var
+  Res: Longint;
+begin
+  SendMessageTimeoutA(HWND_BROADCAST, WM_SETTINGCHANGE, 0, 'Environment', 0, 5000, Res);
+end;
 
 // Add the app directory to PATH. Uses HKLM when installed as admin (choco/machine-wide),
 // HKCU when installed per-user (portable). Inno's HKA handles the shell verbs;
@@ -245,6 +258,7 @@ procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then begin
     AddAppToPath();
+    BroadcastEnvironmentChange();
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, 0, 0);
   end;
 end;
@@ -253,6 +267,7 @@ procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usPostUninstall then begin
     RemoveAppFromPath();
+    BroadcastEnvironmentChange();
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, 0, 0);
   end;
 end;

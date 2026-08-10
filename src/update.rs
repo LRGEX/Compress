@@ -173,7 +173,8 @@ pub fn apply_update(info: UpdateInfo) {
     {
         Ok(r) => r,
         Err(e) => {
-            show_error(&format!("Download failed: {}", e));
+            log_update_issue(&format!("download failed: {}", e));
+            show_error("Couldn't connect to the update server. Please check your internet connection and try again later.");
             return;
         }
     };
@@ -262,16 +263,11 @@ pub fn apply_update(info: UpdateInfo) {
     // The installer bytes are verified (Ed25519). The TOCTOU window between close
     // and launch is small (milliseconds). An attacker would need to replace the file
     // in %TEMP% in that window — same threat model as any installer download.
-    let silent_args = "/VERYSILENT /NORESTART /NOCANCEL /SP-";
+    let silent_args = "/SILENT /NORESTART /NOCANCEL /SP-";
 
-    rfd::MessageDialog::new()
-        .set_title("Updating")
-        .set_description(&format!(
-            "Signature verified. Downloaded v{} installer.\n\nThe app will close and update will install automatically.",
-            info.version
-        ))
-        .set_buttons(rfd::MessageButtons::Ok)
-        .show();
+    // F-U10 fix: removed the unnecessary "Signature verified" dialog — user already
+    // consented in the "Update now?" prompt. No extra click needed.
+    // F-U6 fix: /SILENT (not /VERYSILENT) so a progress window shows during install.
 
     use std::os::windows::process::CommandExt;
 
@@ -313,7 +309,8 @@ pub fn apply_update(info: UpdateInfo) {
             Ok(_) => {}
             Err(e) => {
                 let _ = std::fs::remove_file(&temp_installer);
-                show_error(&format!("Failed to launch installer: {}", e));
+                log_update_issue(&format!("installer launch failed: {}", e));
+                show_error("The update couldn't be launched. Please try downloading it manually from GitHub Releases.");
                 return;
             }
         }

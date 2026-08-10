@@ -566,8 +566,9 @@ fn main() {
 
     // --- COMPRESS path ---
     if args.len() < 2 {
-        // No arguments — normal after auto-update restart or accidental double-click.
-        // Silently exit instead of showing an error.
+        // F-U5 fix: show help instead of silently exiting. User double-clicked the exe
+        // or found it with no args — give them usage guidance, not a silent close.
+        show_help();
         return;
     }
     let own = PathBuf::from(&args[1]);
