@@ -58,11 +58,14 @@ Extracts ZIP, RAR, 7z, and ZGX archives. You don't need WinRAR or 7-Zip installe
 - ✓ Windows Explorer integration — right-click any file or folder
 - ✓ Progress window with live speed and ETA
 - ✓ Atomic archive creation — interrupted compress never leaves a broken file
+- ✓ Split Compress — break large archives into parts (`.partNNN.zgx`)
 - ✓ ZIP extraction
 - ✓ RAR extraction
 - ✓ 7z extraction (single + multi-volume)
 - ✓ Empty folder preservation
 - ✓ Overwrite confirmation before replacing existing files
+- ✓ Instant cancel (compress + extract, all formats)
+- ✓ Clean archive names (`video.mp4` → `video.zgx`)
 - ✓ Ed25519 cryptographically signed auto-updates
 - ✓ MIT License
 - ✓ No administrator required
@@ -72,6 +75,7 @@ Extracts ZIP, RAR, 7z, and ZGX archives. You don't need WinRAR or 7-Zip installe
 
 ## What makes it different
 
+- **Speed first.** Built on Zstandard, optimized for raw speed over slightly smaller archives. Big folders finish in seconds.
 - **Atomic writes.** If your PC crashes or loses power mid-compress, you never get a
   broken half-written archive. The file only appears when it's 100% complete.
 - **Empty folders preserved.** Some archivers drop empty directories silently.
@@ -80,7 +84,8 @@ Extracts ZIP, RAR, 7z, and ZGX archives. You don't need WinRAR or 7-Zip installe
   (whole-second precision), Windows attributes (hidden, read-only, system), and
   symbolic links all round-trip identically. NTFS alternate data streams are not
   supported (rarely used; not planned).
-- **Cancel is clean.** Click Cancel, the partial archive is deleted. No orphaned files.
+- **Instant cancel.** Click Cancel during compress OR extract — it stops immediately
+  (even mid-file for RAR/7z) and cleans up. No orphaned files, no waiting.
 - **Resilient extraction.** If one file is locked or unreadable, extraction continues
   and the file is listed in a skipped-files report — not a total failure.
 - **Signed auto-updates.** Every update is cryptographically verified using Ed25519
@@ -110,10 +115,11 @@ winget install LRGEX.Compress
 ## Command line
 
 ```bash
-lrgex-compress <folder-or-file>      # compress -> <name>.zgx
-lrgex-compress -x <archive>.zgx      # extract  -> <name>\ folder
-lrgex-compress -x -h <archive>.zgx   # extract here (into the archive's folder)
-lrgex-compress --help                # show usage
+lrgex-compress <folder-or-file>                 # compress -> <name>.zgx
+lrgex-compress --split [--size <MB>] <folder>   # split compress -> .partNNN.zgx
+lrgex-compress -x <archive>                     # extract  -> <name>\ folder
+lrgex-compress -x -h <archive>                  # extract here (into the archive's folder)
+lrgex-compress --help                           # show usage
 ```
 
 ## Requirements
@@ -155,7 +161,7 @@ This project vendors two crates with patches. See their README files for details
 
 | Crate | Version | Patch | Why |
 |---|---|---|---|
-| `vendor/unrar` | 0.5.8 | UCM_PROCESSDATA byte counter | `.rar` extraction progress bar |
+| `vendor/unrar` | 0.5.8 | UCM_PROCESSDATA byte counter + cancel flag | `.rar` extraction progress bar + instant cancel |
 | `vendor/libz-ng-sys` | 1.1.29 | CMake static CRT defines (/MT + NDEBUG) | Self-contained exe (no VC++ redist needed) |
 
 If either patch is lost during a dependency bump, the app breaks (no .rar progress, or MSVCP140.dll missing on clean Windows).
