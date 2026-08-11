@@ -1648,6 +1648,7 @@ fn sevenz_write_entry_via_temp(
     out_path: &std::path::Path,
     cancel: &AtomicBool,
     prog: &Progress,
+    mtime_secs: Option<u64>,
 ) -> Result<bool, sevenz_rust2::Error> {
     let tmp = extract_temp_path(out_path);
     // Guard the temp: on Drop (cancel/panic/error) delete the temp. pre_existed is
@@ -1683,12 +1684,30 @@ fn sevenz_write_entry_via_temp(
         return Err(sevenz_rust2::Error::Other(format!("rename: {}", e).into()));
     }
     guard.disarm(); // rename succeeded — temp no longer exists
+    // Restore mtime on the FINAL path (post-rename). The 7z archive carries the
+    // source's last-modified date; without this, extracted files get NOW() as mtime.
+    // ctime/attrs are not preserved by the 7z path (7z's own attributes differ from
+    // the Windows PRESERVED_ATTRS set; ctime isn't carried). mtime is the meaningful
+    // one and is now restored, matching zgx fidelity for the timestamp that matters.
+    if let Some(mt) = mtime_secs {
+        crate::metaattr::apply_times_path(out_path, mt, 0);
+    }
     Ok(true)
+}
+
+/// Extract the entry's last-modified date as UNIX-epoch seconds (what apply_times_path
+/// expects). Returns None if the archive didn't carry a usable mtime. The conversion
+/// chain is: sevenz-rust2 `FileTime` -> `SystemTime` (via the library's own Into impl)
+/// -> seconds since UNIX_EPOCH.
+fn entry_mtime_secs(entry: &sevenz_rust2::SevenZArchiveEntry) -> Option<u64> {
+    use std::time::SystemTime;
+    if !entry.has_last_modified_date { return None; }
+    let st: SystemTime = entry.last_modified_date().into();
+    st.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs())
 }
 
 fn extract_7z(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (bool, String) {
     progress::clear_status();
-
     // Multi-volume 7z: parts are named file.7z.001, file.7z.002, ...
     // (there is NO plain file.7z — the first part is .7z.001).
     //
@@ -1811,7 +1830,8 @@ fn extract_7z_multi(parts: &[PathBuf], dest: &Path, cancel: &AtomicBool, label: 
                         std::fs::create_dir_all(parent)
                             .map_err(|e| sevenz_rust2::Error::Other(format!("mkdir: {}", e).into()))?;
                     }
-                    return sevenz_write_entry_via_temp(rdr, out_path, cancel, &prog_arc);
+                    let mt = entry_mtime_secs(entry);
+                    return sevenz_write_entry_via_temp(rdr, out_path, cancel, &prog_arc, mt);
                 }
                 Ok(true)
             },
@@ -1879,7 +1899,8 @@ fn extract_7z_single(archive: &Path, dest: &Path, cancel: &AtomicBool, label: St
                     std::fs::create_dir_all(parent)
                         .map_err(|e| sevenz_rust2::Error::Other(format!("mkdir: {}", e).into()))?;
                 }
-                return sevenz_write_entry_via_temp(reader, out_path, cancel, &prog_arc);
+                let mt = entry_mtime_secs(entry);
+                return sevenz_write_entry_via_temp(reader, out_path, cancel, &prog_arc, mt);
             }
             Ok(true) // keep going
         },
