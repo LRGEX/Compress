@@ -4,21 +4,24 @@
 //! No content round-trip, no metadata. This test builds REAL 7z archives with 7-Zip,
 //! extracts via the LRGEX exe, and verifies content + mtime byte-for-byte.
 //!
-//! #[ignore]'d because it needs 7-Zip at C:\Program Files\7-Zip\7z.exe (not on every box).
-//! Honest signal — run via: cargo test --test sevenz_round_trip -- --ignored
+//! Auto-RUNS when 7-Zip is present (no --ignored needed). When 7-Zip is absent it no-ops
+//! as a PASS with a skip message — note this is a FALSE GREEN on toolless boxes (run with
+//! --nocapture to see "SKIP sevenz_*". The win over #[ignore] is that the tests run
+//! automatically on any 7-Zip-equipped box; the cost is the false-green-on-absence.
 
-#[ignore = "requires 7-Zip at C:\\Program Files\\7-Zip\\7z.exe — run with --ignored"]
+use std::fs;
+use std::io::Write;
+use std::path::PathBuf;
+use std::process::Command;
+use std::time::{Duration, Instant};
+
 #[test]
 fn sevenz_single_round_trip_content_and_mtime() {
-    use std::fs;
-    use std::io::{Read, Write};
-    use std::path::PathBuf;
-    use std::process::Command;
-    use std::time::{Duration, Instant};
-    use std::os::windows::fs::MetadataExt;
-
     let sevenz = std::path::Path::new(r"C:\Program Files\7-Zip\7z.exe");
-    assert!(sevenz.exists(), "7-Zip not found");
+    if !sevenz.exists() {
+        eprintln!("SKIP sevenz_single: 7-Zip not found — install 7-Zip to run this test");
+        return;
+    }
     let exe = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/release/lrgex-compress.exe");
     assert!(exe.exists(), "Release exe not built. Run `cargo build --release`.");
 
@@ -39,39 +42,24 @@ fn sevenz_single_round_trip_content_and_mtime() {
     fs::write(src.join("sub").join("nested.txt"), b"nested in 7z").unwrap();
 
     // Set a KNOWN mtime on payload.bin so we can verify it round-trips.
-    // 2020-01-01 UTC = 1577836800. Set via the file's handle (Windows SetFileTime).
     set_mtime(&src.join("payload.bin"), 1577836800);
     let src_mtime = mtime_secs(&src.join("payload.bin"));
     assert_eq!(src_mtime, 1577836800, "setup failed: mtime didn't set");
 
-    // Build the .7z with 7-Zip. Run 7z from INSIDE src with relative paths, so the
+    // Build the .7z with 7-Zip. Run 7z from INSIDE src with no path args so the
     // archive stores entries at the root (not embedded with the absolute source path).
     let archive = tmp.path().join("probe.7z");
     let out = Command::new(sevenz)
-        .args(["a", "-t7z", "-mx=1",
-               &archive.to_string_lossy()])
-        .current_dir(&src)  // <-- run from src so paths are relative
+        .args(["a", "-t7z", "-mx=1", &archive.to_string_lossy()])
+        .current_dir(&src)
         .output().expect("failed to run 7z");
     assert!(out.status.success(), "7z failed: {}", String::from_utf8_lossy(&out.stderr));
 
     // Extract via LRGEX. 7z extracts to sibling folder named after stem.
     let dest = archive.with_extension("");
     let _ = fs::remove_dir_all(&dest);
-    let run = || -> i32 {
-        let start = Instant::now();
-        let mut child = Command::new(&exe).args(["-x", &archive.to_string_lossy()]).spawn().unwrap();
-        loop {
-            match child.try_wait() {
-                Ok(Some(s)) => return s.code().unwrap_or(-1),
-                Ok(None) => {
-                    if start.elapsed() > Duration::from_secs(120) { let _ = child.kill(); panic!("timeout"); }
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-                Err(_) => panic!("wait failed"),
-            }
-        }
-    };
-    assert_eq!(run(), 0, "7z extract failed");
+    let code = run_exe_blocking(&exe, &["-x", &archive.to_string_lossy()], Duration::from_secs(120));
+    assert_eq!(code, 0, "7z extract failed");
 
     // Content checks (SHA256)
     assert_eq!(sha256_file(&dest.join("payload.bin")), sha256_bytes(&payload),
@@ -81,30 +69,31 @@ fn sevenz_single_round_trip_content_and_mtime() {
     assert_eq!(sha256_file(&dest.join("sub").join("nested.txt")), sha256_bytes(b"nested in 7z"),
         "nested.txt content mismatch");
 
-    // Metadata check: mtime MUST round-trip
+    // Metadata check: mtime MUST round-trip (the 7z mtime fix in extract.rs)
     let e_mtime = mtime_secs(&dest.join("payload.bin"));
     assert_eq!(e_mtime, src_mtime,
         "7z MTIME MISMATCH: source={src_mtime}, extracted={e_mtime}");
+    eprintln!("PASS sevenz_single: content + mtime round-trip exact");
 }
 
-#[ignore = "requires 7-Zip — run with --ignored"]
 #[test]
 fn sevenz_multi_volume_round_trip_content() {
+    let sevenz = std::path::Path::new(r"C:\Program Files\7-Zip\7z.exe");
+    if !sevenz.exists() {
+        eprintln!("SKIP sevenz_multi: 7-Zip not found");
+        return;
+    }
     use std::fs;
     use std::io::Write;
     use std::path::PathBuf;
     use std::process::Command;
-    use std::time::{Duration, Instant};
 
-    let sevenz = std::path::Path::new(r"C:\Program Files\7-Zip\7z.exe");
-    assert!(sevenz.exists(), "7-Zip not found");
     let exe = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/release/lrgex-compress.exe");
     assert!(exe.exists(), "Release exe not built");
 
     let tmp = tempfile::TempDir::new().unwrap();
     let src = tmp.path().join("src");
     fs::create_dir_all(&src).unwrap();
-    // 4MB incompressible so the multi-volume split actually splits it
     let mut state: u64 = 0x5555_6666_7777_8888;
     let mut payload = Vec::with_capacity(4 * 1024 * 1024);
     for _ in 0..4 * 1024 * 1024 {
@@ -116,10 +105,8 @@ fn sevenz_multi_volume_round_trip_content() {
     // Build multi-volume 7z: 100KB parts. Run 7z from src with relative path.
     let base = tmp.path().join("probe.7z");
     let out = Command::new(sevenz)
-        .args(["a", "-t7z", "-mx=1", "-v100k",
-               &base.to_string_lossy(),
-               "big.bin"])
-        .current_dir(&src)  // relative path → archive stores "big.bin" at root
+        .args(["a", "-t7z", "-mx=1", "-v100k", &base.to_string_lossy(), "big.bin"])
+        .current_dir(&src)
         .output().expect("failed to run 7z");
     assert!(out.status.success(), "7z multi failed: {}", String::from_utf8_lossy(&out.stderr));
 
@@ -130,11 +117,7 @@ fn sevenz_multi_volume_round_trip_content() {
         .filter(|n| n.starts_with("probe.7z.")).count();
     assert!(part_count >= 2, "expected >=2 parts, got {part_count}");
 
-    // Extract part001 via LRGEX
-    let dest = tmp.path().join("extracted");
-    let _ = fs::remove_dir_all(&dest);
-    // Multi-volume extracts to base name in the parts' parent — copy parts to a clean dir
-    // to avoid collision, then extract.
+    // Extract part001 via LRGEX. Copy parts to a clean dir to avoid collision.
     let clean = tmp.path().join("clean");
     fs::create_dir_all(&clean).unwrap();
     for e in fs::read_dir(tmp.path()).unwrap().flatten() {
@@ -145,27 +128,15 @@ fn sevenz_multi_volume_round_trip_content() {
         }
     }
     let first_clean = clean.join("probe.7z.001");
-    let dest_clean = clean.join("probe"); // base name
+    let dest_clean = clean.join("probe");
     let _ = fs::remove_dir_all(&dest_clean);
-    let run = || -> i32 {
-        let start = Instant::now();
-        let mut child = Command::new(&exe).args(["-x", &first_clean.to_string_lossy()]).spawn().unwrap();
-        loop {
-            match child.try_wait() {
-                Ok(Some(s)) => return s.code().unwrap_or(-1),
-                Ok(None) => {
-                    if start.elapsed() > Duration::from_secs(120) { let _ = child.kill(); panic!("timeout"); }
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-                Err(_) => panic!("wait failed"),
-            }
-        }
-    };
-    assert_eq!(run(), 0, "7z multi extract failed");
+    let code = run_exe_blocking(&exe, &["-x", &first_clean.to_string_lossy()], Duration::from_secs(120));
+    assert_eq!(code, 0, "7z multi extract failed");
 
     assert!(dest_clean.join("big.bin").exists(), "big.bin missing after multi extract");
     assert_eq!(sha256_file(&dest_clean.join("big.bin")), sha256_bytes(&payload),
         "7z multi-volume content mismatch");
+    eprintln!("PASS sevenz_multi: content byte-identical across {part_count} parts");
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────
@@ -199,6 +170,20 @@ fn set_mtime(p: &std::path::Path, secs: u64) {
         if h as isize != -1 {
             let _ = SetFileTime(h, std::ptr::null(), std::ptr::null(), &ft);
             let _ = windows_sys::Win32::Foundation::CloseHandle(h);
+        }
+    }
+}
+fn run_exe_blocking(exe: &std::path::Path, args: &[&str], timeout: Duration) -> i32 {
+    let start = Instant::now();
+    let mut child = std::process::Command::new(exe).args(args).spawn().unwrap();
+    loop {
+        match child.try_wait() {
+            Ok(Some(s)) => return s.code().unwrap_or(-1),
+            Ok(None) => {
+                if start.elapsed() > timeout { let _ = child.kill(); panic!("exe timeout"); }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(_) => panic!("wait failed"),
         }
     }
 }
