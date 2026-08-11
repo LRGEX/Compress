@@ -1633,6 +1633,59 @@ fn sevenz_first_part(archive: &Path) -> Option<PathBuf> {
 }
 
 /// .7z — via the `sevenz-rust2` crate (pure Rust, LZMA2).
+/// Extract a single 7z entry's bytes from `reader` into `out_path` via TEMP-THEN-RENAME,
+/// so a pre-existing file at `out_path` is never truncated/lost on cancel or failure.
+///
+/// Mirrors the proven zgx/zip extract pattern: write to a sidecar temp, flush, apply
+/// mtime on the temp handle (survives same-volume rename), then `atomic_replace` onto
+/// the final path ONLY on full success. On cancel/error the temp is deleted and the
+/// user's original at `out_path` is untouched.
+///
+/// Returns Ok to continue, Ok(false) to signal cancel to the sevenz-rust2 callback
+/// contract, or Err to abort with a message.
+fn sevenz_write_entry_via_temp(
+    reader: &mut dyn std::io::Read,
+    out_path: &std::path::Path,
+    cancel: &AtomicBool,
+    prog: &Progress,
+) -> Result<bool, sevenz_rust2::Error> {
+    let tmp = extract_temp_path(out_path);
+    // Guard the temp: on Drop (cancel/panic/error) delete the temp. pre_existed is
+    // false because the temp is brand-new — the GUARD'S contract only ever deletes
+    // temps, NEVER the user's final-path file.
+    let mut guard = PartialFile::new(tmp.clone());
+    let mut out = std::fs::File::create(&tmp)
+        .map_err(|e| sevenz_rust2::Error::Other(format!("create: {}", e).into()))?;
+    let mut buf = [0u8; 65536];
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            // Drop cleans the temp; signal cancel to the outer callback.
+            return Ok(false);
+        }
+        use std::io::Read;
+        let n = reader.read(&mut buf)
+            .map_err(|e| sevenz_rust2::Error::Other(format!("read: {}", e).into()))?;
+        if n == 0 { break; }
+        use std::io::Write;
+        out.write_all(&buf[..n])
+            .map_err(|e| sevenz_rust2::Error::Other(format!("write: {}", e).into()))?;
+        prog.tick_bytes(n as u64);
+    }
+    // Flush before rename — ensure all bytes hit disk.
+    use std::io::Write;
+    out.flush()
+        .map_err(|e| sevenz_rust2::Error::Other(format!("flush: {}", e).into()))?;
+    drop(out);
+    // Atomic swap: temp → final. This is the ONLY point out_path is touched.
+    // atomic_replace handles the Windows ReadOnly-destination trap internally.
+    if let Err(e) = crate::metaattr::atomic_replace(&tmp, out_path) {
+        // Drop cleans the temp; surface the rename error.
+        return Err(sevenz_rust2::Error::Other(format!("rename: {}", e).into()));
+    }
+    guard.disarm(); // rename succeeded — temp no longer exists
+    Ok(true)
+}
+
 fn extract_7z(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (bool, String) {
     progress::clear_status();
 
@@ -1758,21 +1811,7 @@ fn extract_7z_multi(parts: &[PathBuf], dest: &Path, cancel: &AtomicBool, label: 
                         std::fs::create_dir_all(parent)
                             .map_err(|e| sevenz_rust2::Error::Other(format!("mkdir: {}", e).into()))?;
                     }
-                    let mut out = std::fs::File::create(out_path)
-                        .map_err(|e| sevenz_rust2::Error::Other(format!("create: {}", e).into()))?;
-                    let mut buf = [0u8; 65536];
-                    loop {
-                        if cancel.load(Ordering::Relaxed) {
-                            return Ok(false);
-                        }
-                        use std::io::{Read, Write};
-                        let n = rdr.read(&mut buf)
-                            .map_err(|e| sevenz_rust2::Error::Other(format!("read: {}", e).into()))?;
-                        if n == 0 { break; }
-                        out.write_all(&buf[..n])
-                            .map_err(|e| sevenz_rust2::Error::Other(format!("write: {}", e).into()))?;
-                        prog_arc.tick_bytes(n as u64);
-                    }
+                    return sevenz_write_entry_via_temp(rdr, out_path, cancel, &prog_arc);
                 }
                 Ok(true)
             },
@@ -1840,21 +1879,7 @@ fn extract_7z_single(archive: &Path, dest: &Path, cancel: &AtomicBool, label: St
                     std::fs::create_dir_all(parent)
                         .map_err(|e| sevenz_rust2::Error::Other(format!("mkdir: {}", e).into()))?;
                 }
-                let mut out = std::fs::File::create(out_path)
-                    .map_err(|e| sevenz_rust2::Error::Other(format!("create: {}", e).into()))?;
-                let mut buf = [0u8; 65536];
-                loop {
-                    if cancel.load(Ordering::Relaxed) {
-                        return Ok(false);
-                    }
-                    use std::io::{Read, Write};
-                    let n = reader.read(&mut buf)
-                        .map_err(|e| sevenz_rust2::Error::Other(format!("read: {}", e).into()))?;
-                    if n == 0 { break; }
-                    out.write_all(&buf[..n])
-                        .map_err(|e| sevenz_rust2::Error::Other(format!("write: {}", e).into()))?;
-                    prog_arc.tick_bytes(n as u64);
-                }
+                return sevenz_write_entry_via_temp(reader, out_path, cancel, &prog_arc);
             }
             Ok(true) // keep going
         },
