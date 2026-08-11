@@ -40,6 +40,12 @@ windows-sys = { version = "0.59", features = [
 unrar = "0.5"
 zip = { version = "8", default-features = false, features = ["deflate-flate2-zlib-ng", "deflate64", "bzip2", "zstd", "lzma", "time", "aes-crypto"] }
 sevenz-rust2 = "0.7"
+
+[dev-dependencies]
+proptest = "1"
+tempfile = "3"
+sha2 = "0.10"
+
 [build-dependencies]
 winres = "0.1"
 

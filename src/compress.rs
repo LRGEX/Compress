@@ -224,7 +224,7 @@ fn compress_into<W: std::io::Write>(
     let threads = std::thread::available_parallelism()
         .map(|n| n.get() as u32).unwrap_or(4);
     let _ = encoder.multithread(threads);
-    let _ = encoder.include_checksum(false);
+    let _ = encoder.include_checksum(true);  // XXHash64 — guaranteed payload integrity on extract
     use zstd::stream::raw::CParameter;
     let _ = encoder.set_parameter(CParameter::JobSize(16 * 1024 * 1024));
     let _ = encoder.set_parameter(CParameter::OverlapSizeLog(0));

@@ -400,3 +400,52 @@ fn wide_from_str(s: &str) -> Option<Vec<u16>> {
 fn current_exe_wide() -> Option<Vec<u16>> {
     path_to_wide(&std::env::current_exe().ok()?)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // These tests pin the ACTUAL CURRENT value of PRESERVED_ATTRS so it can't be changed
+    // silently. If someone edits this constant, a test fails and they must justify it.
+    //
+    // Current contract (as of v1.6.0): Hidden + System + Readonly + Archive are ALL
+    // preserved across the round-trip. This means a source file with the Hidden or
+    // System bit will be Hidden/System after extract — invisible in Windows Explorer
+    // on default settings. That is a KNOWN UX footgun (it once triggered a "data loss"
+    // panic that turned out to be invisible-but-present files), but it is the CURRENT
+    // intended behavior (matches what 7-Zip/WinRAR do: preserve these bits).
+    //
+    // If you want to CHANGE this (e.g. drop Hidden/System so extracts are always
+    // visible), do it deliberately: edit the constant AND these tests together, and
+    // confirm it's the product decision you want. Don't smuggle the change in via a
+    // test that lies about the present code.
+
+    #[test]
+    fn preserved_attrs_is_exactly_the_current_v1_6_0_set() {
+        assert_eq!(PRESERVED_ATTRS,
+            ATTR_HIDDEN | ATTR_READONLY | ATTR_SYSTEM | ATTR_ARCHIVE,
+            "PRESERVED_ATTRS changed from the v1.6.0 value. If this is intentional \
+             (e.g. dropping Hidden/System so extracts are always visible), document the \
+             product decision in this test and update the assertion deliberately.");
+    }
+
+    #[test]
+    fn preserved_attrs_includes_hidden() {
+        assert_ne!(PRESERVED_ATTRS & ATTR_HIDDEN, 0, "ATTR_HIDDEN dropped — extracts may now differ from source");
+    }
+
+    #[test]
+    fn preserved_attrs_includes_system() {
+        assert_ne!(PRESERVED_ATTRS & ATTR_SYSTEM, 0, "ATTR_SYSTEM dropped — extracts may now differ from source");
+    }
+
+    #[test]
+    fn preserved_attrs_includes_readonly() {
+        assert_ne!(PRESERVED_ATTRS & ATTR_READONLY, 0);
+    }
+
+    #[test]
+    fn preserved_attrs_includes_archive() {
+        assert_ne!(PRESERVED_ATTRS & ATTR_ARCHIVE, 0);
+    }
+}
