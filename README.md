@@ -46,9 +46,9 @@ No app to open. No drag-and-drop. No compression levels to choose — LRGEX Comp
 
 ## Extraction
 
-Right-click any `.zgx`, `.zip`, or `.rar` → **LRGEX → Extract** or **Extract Here**.
+Right-click any `.zgx`, `.zip`, `.rar`, or `.7z` → **LRGEX → Extract** or **Extract Here**.
 
-Extracts ZIP, RAR, and ZGX archives. You don't need WinRAR or 7-Zip installed.
+Extracts ZIP, RAR, 7z, and ZGX archives. You don't need WinRAR or 7-Zip installed.
 
 ---
 
@@ -60,6 +60,7 @@ Extracts ZIP, RAR, and ZGX archives. You don't need WinRAR or 7-Zip installed.
 - ✓ Atomic archive creation — interrupted compress never leaves a broken file
 - ✓ ZIP extraction
 - ✓ RAR extraction
+- ✓ 7z extraction (single + multi-volume)
 - ✓ Empty folder preservation
 - ✓ Overwrite confirmation before replacing existing files
 - ✓ Ed25519 cryptographically signed auto-updates
