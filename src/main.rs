@@ -65,7 +65,7 @@ slint::slint! {
         in property <bool> done: false;
         in property <bool> cancelling: false;
         in property <bool> cancellable: false;
-        in property <bool> indeterminate: false;
+        in property <bool> indeterminate: true; // start in sweep mode so the FIRST frame shows motion (status file may not exist yet)
         in property <string> result: "";
         in property <color> result-color: #4caf50;
         in property <string> version-text: "";
@@ -758,7 +758,11 @@ fn run_one(op_label: String, op_detail: Option<String>, cancellable: bool, dest:
             None => return,
         };
         if let Some(s) = progress::read_status() {
-            if s.bytes_total > 0 {
+            if s.bytes_total > 0 && s.bytes_done > 0 {
+                // Both known and progress has started → determinate percentage bar.
+                // (bytes_done > 0 filters the zstd-buffering window where bytes_total is
+                // set but no compressed chunk has been emitted yet — that window would
+                // otherwise show a static 0% fill that reads as "frozen".)
                 app.set_indeterminate(false);
                 let pct = ((s.bytes_done as f64 / s.bytes_total as f64) * 100.0).min(100.0) as i32;
                 app.set_progress_fraction((pct as f32) / 100.0);
@@ -774,9 +778,17 @@ fn run_one(op_label: String, op_detail: Option<String>, cancellable: bool, dest:
                     .into(),
                 );
             } else {
+                // Either bytes_done is still 0 (zstd buffering during compress, OR the
+                // walk phase) OR the total is genuinely unknown (some extract formats).
+                // Show the animated sweep so the user sees motion the instant they click,
+                // instead of a static 0% bar. Default-indeterminate (line 68) covers the
+                // very first frame before any status file exists.
                 app.set_indeterminate(true);
                 app.set_progress_fraction(0.0);
-                app.set_detail("Extracting... (size unknown)".into());
+                // Operation-aware message: if the total IS known, this is the compress
+                // buffering window — say "Compressing...", not "size unknown".
+                let msg = if s.bytes_total > 0 { "Compressing..." } else { "Extracting... (size unknown)" };
+                app.set_detail(msg.into());
             }
             if !app.get_done() {
                 if s.phase == 3 {
