@@ -18,6 +18,10 @@
   detected and recreated (with path-traversal guard for security).
 - **Instant feedback on click**: the progress window now shows an animated sweep the
   moment you click Compress or Extract — no more frozen 0% bar while the engine spins up.
+- **Encrypted archive support**: password-protected RAR, 7z, and ZIP archives now
+  prompt for a password. GUI shows a masked password dialog with auto-focus.
+  CLI: `-p <password>` flag works in any position.
+  Example: `lrgex-compress -x -p secret archive.rar`
 
 ## 🔧 Fixes
 
@@ -48,15 +52,16 @@
 
 ## ⚠️ Known Limitations
 
-- **Encrypted RAR**: password-protected `.rar` files are not supported. Extraction will
-  fail or hang — there is no password input in the extract path. A future version may
-  add a password prompt.
 - **7z symlinks**: requires Administrator or Developer Mode to create symlinks on Windows.
   Without elevation, symlinks in .7z archives are skipped silently.
 - **zip ctime**: the ZIP format has no creation time field — cannot be preserved.
 - **7z ctime**: 7-Zip does not store creation time by default (only with `-mtc=on`).
   Restored when present, absent when not.
 - **RAR4**: unrar-rs claims support but could not be tested (WinRAR 7.23 creates RAR5 only).
+- **Encrypted archives**: password-protected RAR, 7z, and ZIP are supported via GUI
+  prompt or `-p <password>` CLI flag. However, the GUI window stays open briefly after
+  extraction completes (auto-close delay). Scripted/headless use with `-p` blocks until
+  the window is closed manually.
 
 ---
 

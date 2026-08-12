@@ -65,6 +65,8 @@ Extracts ZIP, RAR, 7z, and ZGX archives. You don't need WinRAR or 7-Zip installe
 - ✓ Empty folder preservation
 - ✓ Overwrite confirmation before replacing existing files
 - ✓ Instant cancel (compress + extract, all formats)
+- ✓ Encrypted archive support — password prompt for RAR, 7z, and ZIP (CLI: `-p <password>`)
+- ✓ Integrity checksum — `.zgx` archives verified on extract via XXHash64
 - ✓ Clean archive names (`video.mp4` → `video.zgx`)
 - ✓ Ed25519 cryptographically signed auto-updates
 - ✓ GPL-3.0-or-later License
