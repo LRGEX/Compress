@@ -139,6 +139,78 @@ fn sevenz_multi_volume_round_trip_content() {
     eprintln!("PASS sevenz_multi: content byte-identical across {part_count} parts");
 }
 
+#[test]
+fn sevenz_attrs_and_ctime_round_trip() {
+    // Verify Windows attributes + ctime round-trip through 7z (not just mtime).
+    let sevenz = std::path::Path::new(r"C:\Program Files\7-Zip\7z.exe");
+    if !sevenz.exists() {
+        eprintln!("SKIP sevenz_attrs_ctime: 7-Zip not found");
+        return;
+    }
+    use std::fs;
+    use std::path::PathBuf;
+    use std::process::Command;
+    use std::os::windows::fs::MetadataExt;
+
+    let exe = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/release/lrgex-compress.exe");
+    assert!(exe.exists(), "Release exe not built");
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let src = tmp.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    let probe = src.join("probe.txt");
+    fs::write(&probe, b"7z attrs + ctime probe").unwrap();
+
+    // Set KNOWN mtime + ctime FIRST, then attrs LAST. ReadOnly (0x1) would block
+    // CreateFileW(GENERIC_WRITE) inside set_mtime/set_ctime, so order matters.
+    set_mtime(&probe, 1577836800);  // 2020-01-01
+    set_ctime(&probe, 1560600000);  // 2019-06-15
+    set_attrs(&probe, 0x1 | 0x20);  // ReadOnly + Archive (both in PRESERVED_ATTRS)
+
+    let src_attrs = std::fs::metadata(&probe).unwrap().file_attributes();
+    let src_mtime = mtime_secs(&probe);
+    let src_ctime = ctime_secs(&probe);
+    eprintln!("source: attrs=0x{src_attrs:x}, mtime={src_mtime}, ctime={src_ctime}");
+
+    // Build the .7z with 7-Zip — use -mtc=on so creation time IS stored in the
+    // archive (default omits it). This exercises the engine's has_creation_date
+    // restore code path, which default-mode testing can never reach.
+    let archive = tmp.path().join("probe.7z");
+    let out = Command::new(sevenz).args(["a", "-t7z", "-mx=1", "-mtc=on", &archive.to_string_lossy()])
+        .current_dir(&src).output().expect("failed to run 7z");
+    assert!(out.status.success(), "7z failed: {}", String::from_utf8_lossy(&out.stderr));
+
+    // Extract via LRGEX (sibling folder named after stem).
+    let dest = archive.with_extension("");
+    let _ = fs::remove_dir_all(&dest);
+    let code = run_exe_blocking(&exe, &["-x", &archive.to_string_lossy()], Duration::from_secs(120));
+    assert_eq!(code, 0, "7z extract failed");
+
+    let out_probe = dest.join("probe.txt");
+    assert!(out_probe.exists(), "probe.txt missing after 7z extract");
+
+    let e_attrs = std::fs::metadata(&out_probe).unwrap().file_attributes();
+    let e_mtime = mtime_secs(&out_probe);
+    let e_ctime = ctime_secs(&out_probe);
+    eprintln!("extracted: attrs=0x{e_attrs:x}, mtime={e_mtime}, ctime={e_ctime}");
+
+    // mtime MUST round-trip exactly.
+    assert_eq!(e_mtime, src_mtime, "7z MTIME MISMATCH: {src_mtime} -> {e_mtime}");
+    // ctime: built with -mtc=on so the archive DOES carry it. The engine must
+    // restore it via has_creation_date. Assert exact round-trip.
+    if src_ctime > 0 && e_ctime > 0 {
+        assert_eq!(e_ctime, src_ctime, "7z CTIME MISMATCH: {src_ctime} -> {e_ctime} (archive built with -mtc=on, engine should restore)");
+        eprintln!("PASS sevenz_attrs_ctime: mtime exact, attrs preserved, ctime exact (via -mtc=on)");
+    } else {
+        eprintln!("PASS sevenz_attrs_ctime: mtime exact, attrs preserved. ctime not verifiable (src={src_ctime}, got={e_ctime})");
+    }
+    // attrs: the PRESERVED_ATTRS subset (ReadOnly+Archive) must survive.
+    let preserved_subset = e_attrs & (0x1 | 0x20);
+    assert_eq!(preserved_subset, 0x1 | 0x20,
+        "7z ATTRS MISMATCH: expected ReadOnly+Archive (0x21), got attrs=0x{e_attrs:x} (preserved subset=0x{preserved_subset:x})");
+    eprintln!("PASS sevenz_attrs_ctime: mtime exact, attrs preserved, ctime handled");
+}
+
 // ─── helpers ──────────────────────────────────────────────────────────────
 
 fn sha256_bytes(b: &[u8]) -> String {
@@ -172,6 +244,32 @@ fn set_mtime(p: &std::path::Path, secs: u64) {
             let _ = windows_sys::Win32::Foundation::CloseHandle(h);
         }
     }
+}
+fn set_ctime(p: &std::path::Path, secs: u64) {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::Storage::FileSystem::{CreateFileW, SetFileTime, FILE_GENERIC_WRITE, FILE_FLAG_BACKUP_SEMANTICS};
+    use std::os::windows::ffi::OsStrExt;
+    let mut wide: Vec<u16> = p.as_os_str().encode_wide().collect(); wide.push(0);
+    let intervals = (secs + 11644473600) * 10_000_000;
+    let ft = FILETIME { dwLowDateTime: (intervals & 0xFFFFFFFF) as u32, dwHighDateTime: (intervals >> 32) as u32 };
+    unsafe {
+        let h = CreateFileW(wide.as_ptr(), FILE_GENERIC_WRITE, 0, std::ptr::null(), 3, FILE_FLAG_BACKUP_SEMANTICS, std::ptr::null_mut());
+        if h as isize != -1 {
+            let _ = SetFileTime(h, &ft, std::ptr::null(), std::ptr::null());
+            let _ = windows_sys::Win32::Foundation::CloseHandle(h);
+        }
+    }
+}
+fn set_attrs(p: &std::path::Path, attrs: u32) {
+    use windows_sys::Win32::Storage::FileSystem::SetFileAttributesW;
+    use std::os::windows::ffi::OsStrExt;
+    let mut wide: Vec<u16> = p.as_os_str().encode_wide().collect(); wide.push(0);
+    unsafe { let _ = SetFileAttributesW(wide.as_ptr(), attrs); }
+}
+fn ctime_secs(p: &std::path::Path) -> u64 {
+    let m = std::fs::symlink_metadata(p).unwrap();
+    m.created().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs()).unwrap_or(0)
 }
 fn run_exe_blocking(exe: &std::path::Path, args: &[&str], timeout: Duration) -> i32 {
     let start = Instant::now();

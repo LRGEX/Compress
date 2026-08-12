@@ -1648,7 +1648,7 @@ fn sevenz_write_entry_via_temp(
     out_path: &std::path::Path,
     cancel: &AtomicBool,
     prog: &Progress,
-    mtime_secs: Option<u64>,
+    meta: &SevenzMeta,
 ) -> Result<bool, sevenz_rust2::Error> {
     let tmp = extract_temp_path(out_path);
     // Guard the temp: on Drop (cancel/panic/error) delete the temp. pre_existed is
@@ -1684,15 +1684,51 @@ fn sevenz_write_entry_via_temp(
         return Err(sevenz_rust2::Error::Other(format!("rename: {}", e).into()));
     }
     guard.disarm(); // rename succeeded — temp no longer exists
-    // Restore mtime on the FINAL path (post-rename). The 7z archive carries the
-    // source's last-modified date; without this, extracted files get NOW() as mtime.
-    // ctime/attrs are not preserved by the 7z path (7z's own attributes differ from
-    // the Windows PRESERVED_ATTRS set; ctime isn't carried). mtime is the meaningful
-    // one and is now restored, matching zgx fidelity for the timestamp that matters.
-    if let Some(mt) = mtime_secs {
-        crate::metaattr::apply_times_path(out_path, mt, 0);
-    }
+    // Restore all carried metadata on the FINAL path (post-rename).
+    meta.apply_to(out_path);
     Ok(true)
+}
+
+/// All metadata the 7z path can extract from a SevenZArchiveEntry and restore
+/// onto the extracted file. Each field is Option — 7z entries flag which fields
+/// are present (has_last_modified_date, has_creation_date, has_windows_attributes).
+struct SevenzMeta {
+    mtime_secs: Option<u64>,
+    ctime_secs: Option<u64>,
+    attrs: Option<u32>,
+}
+
+impl SevenzMeta {
+    fn from_entry(entry: &sevenz_rust2::SevenZArchiveEntry) -> Self {
+        use std::time::SystemTime;
+        let mtime_secs = if entry.has_last_modified_date {
+            let st: SystemTime = entry.last_modified_date().into();
+            st.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs())
+        } else { None };
+        let ctime_secs = if entry.has_creation_date {
+            let st: SystemTime = entry.creation_date().into();
+            st.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs())
+        } else { None };
+        let attrs = if entry.has_windows_attributes {
+            Some(entry.windows_attributes())
+        } else { None };
+        Self { mtime_secs, ctime_secs, attrs }
+    }
+
+    /// Apply all carried fields to the extracted file at `path`. Best-effort —
+    /// each step ignores failure (a missing ctime shouldn't fail an extract).
+    fn apply_to(&self, path: &std::path::Path) {
+        if let Some(mt) = self.mtime_secs {
+            crate::metaattr::apply_times_path(path, mt, self.ctime_secs.unwrap_or(0));
+        } else if let Some(ct) = self.ctime_secs {
+            crate::metaattr::apply_times_path(path, 0, ct);
+        }
+        if let Some(a) = self.attrs {
+            // apply_attrs_normalized masks to PRESERVED_ATTRS internally, so
+            // 7z's full dwFileAttributes is filtered to the safe subset.
+            crate::metaattr::apply_attrs_normalized(path, a);
+        }
+    }
 }
 
 /// Extract the entry's last-modified date as UNIX-epoch seconds (what apply_times_path
@@ -1700,10 +1736,7 @@ fn sevenz_write_entry_via_temp(
 /// chain is: sevenz-rust2 `FileTime` -> `SystemTime` (via the library's own Into impl)
 /// -> seconds since UNIX_EPOCH.
 fn entry_mtime_secs(entry: &sevenz_rust2::SevenZArchiveEntry) -> Option<u64> {
-    use std::time::SystemTime;
-    if !entry.has_last_modified_date { return None; }
-    let st: SystemTime = entry.last_modified_date().into();
-    st.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs())
+    SevenzMeta::from_entry(entry).mtime_secs
 }
 
 fn extract_7z(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (bool, String) {
@@ -1830,8 +1863,8 @@ fn extract_7z_multi(parts: &[PathBuf], dest: &Path, cancel: &AtomicBool, label: 
                         std::fs::create_dir_all(parent)
                             .map_err(|e| sevenz_rust2::Error::Other(format!("mkdir: {}", e).into()))?;
                     }
-                    let mt = entry_mtime_secs(entry);
-                    return sevenz_write_entry_via_temp(rdr, out_path, cancel, &prog_arc, mt);
+                    let meta = SevenzMeta::from_entry(entry);
+                    return sevenz_write_entry_via_temp(rdr, out_path, cancel, &prog_arc, &meta);
                 }
                 Ok(true)
             },
@@ -1899,8 +1932,8 @@ fn extract_7z_single(archive: &Path, dest: &Path, cancel: &AtomicBool, label: St
                     std::fs::create_dir_all(parent)
                         .map_err(|e| sevenz_rust2::Error::Other(format!("mkdir: {}", e).into()))?;
                 }
-                let mt = entry_mtime_secs(entry);
-                return sevenz_write_entry_via_temp(reader, out_path, cancel, &prog_arc, mt);
+                let meta = SevenzMeta::from_entry(entry);
+                return sevenz_write_entry_via_temp(reader, out_path, cancel, &prog_arc, &meta);
             }
             Ok(true) // keep going
         },
