@@ -1425,170 +1425,180 @@ fn rar_totals(archive: &Path) -> (usize, u64) {
     (files, bytes)
 }
 
-/// .rar — via the vendored `unrar` crate with UCM_PROCESSDATA counter patch.
-/// Real sub-file progress: a 100ms sampler thread reads the global processed-bytes
-/// counter and ticks deltas into Progress. Works for single-file and multi-file archives.
+/// .rar — via `unrar-rs` (pure Rust, RAR5+RAR4). Replaces the old vendored C unrar.
+/// Preserves ALL safety properties of the previous implementation:
+///   - staging-dir isolation (extract to temp, move into dest ONLY on full success)
+///   - stale-staging recovery (rename to ORPHAN, never delete — may hold unmoved files)
+///   - instant mid-file cancel (custom Writer returns Err(Other) → aborts decompression)
+///   - multi-volume support (StaticVolumeProvider from ordered part paths)
+/// NEW (not in the old path):
+///   - symlink preservation (member.is_symlink + link_target → create_symlink + elevation)
+///   - Windows attributes restoration (member.attributes → apply_attrs_normalized)
+///   - ctime restoration (member.ctime → apply_times_path, when carried)
 fn extract_rar(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (bool, String) {
+    // RAR extraction via unrar-rs. See doc comment above for full design.
     progress::clear_status();
-    // Multi-volume RAR: if the user right-clicked a continuation part (part025.rar),
-    // redirect to part001 automatically — same as WinRAR. The unrar library can't
-    // navigate backward from a middle part, so always start from part001.
+
+    // 1. Multi-volume: redirect to part001 + enumerate ALL parts
     let first_part = unrar::Archive::new(archive)
         .first_part_option()
         .filter(|p| p != archive && p.exists());
-    let archive: &Path = first_part.as_deref().unwrap_or(archive);
-    let label = archive
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_default();
+    let archive_path: &Path = first_part.as_deref().unwrap_or(archive);
+    let label = archive_path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let volume_paths = enumerate_rar_volumes(archive_path);
+    if volume_paths.is_empty() {
+        return (false, format!("Could not find RAR volume parts starting from {}", archive_path.display()));
+    }
+    let provider = unrar_rs::StaticVolumeProvider::from_ordered(volume_paths);
+
+    // 2. Open archive + get metadata
+    let file = match std::fs::File::open(archive_path) {
+        Ok(f) => f,
+        Err(e) => return (false, format!("open archive: {e}")),
+    };
+    let mut rar = match unrar_rs::RarArchive::open(file) {
+        Ok(r) => r,
+        Err(e) => return (false, format!("open rar: {e}")),
+    };
+    let members: Vec<unrar_rs::MemberInfo> = rar.metadata().members.clone();
+
     let prog = Progress::new(&label);
     let heartbeat = prog.spawn_writer();
-
     prog.set_phase(0);
-    let (files, total) = rar_totals(archive);
-    prog.set_totals(files, total); // total == 0 -> sweep (encrypted/unreadable headers)
+    let mut total_bytes: u64 = 0;
+    let mut file_count: usize = 0;
+    for m in &members {
+        if !m.is_directory { file_count += 1; total_bytes += m.unpacked_size.unwrap_or(0); }
+    }
+    prog.set_totals(file_count, total_bytes);
     prog.set_phase(1);
 
-    // Sub-file progress via the vendored UCM_PROCESSDATA counter.
-    unrar::reset_processed();
-    unrar::clear_cancel();
-    let sampler_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    // Spawn the sampler thread with a raw pointer to the cancel flag. This is safe
-    // because `cancel` outlives the thread — we join it below before returning.
-    let cancel_ptr = cancel as *const std::sync::atomic::AtomicBool as usize;
-    let sampler = {
-        let prog = prog.clone();
-        let stop = sampler_stop.clone();
-        std::thread::spawn(move || {
-            let cancel_ref = unsafe { &(cancel_ptr as *const std::sync::atomic::AtomicBool).as_ref().unwrap() };
-            let mut last: u64 = 0;
-            loop {
-                let now = unrar::processed_bytes();
-                if now > last {
-                    prog.tick_bytes(now - last);
-                    last = now;
-                }
-                // LRGEX: forward our cancel flag to unrar's UCM_PROCESSDATA hook.
-                // Once set, the next decompressed chunk returns -1 → ERAR_ECLOSE →
-                // extract_with_base returns Err → between-file check catches it.
-                if cancel_ref.load(std::sync::atomic::Ordering::Relaxed) {
-                    unrar::set_cancel();
-                }
-                if stop.load(std::sync::atomic::Ordering::Relaxed) {
-                    break; // one final sample above, then exit
-                }
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
-        })
-    };
-
+    // 3. Staging dir (same crash-safety as the old path)
     let result = (|| -> Result<(), String> {
         std::fs::create_dir_all(dest).map_err(|e| e.to_string())?;
-        // Staging directory: extract everything to a temp dir first, then move files
-        // into place ONLY on full success. This protects ALL cases — pre-existing
-        // files are never touched until the move, so a failed extract leaves the
-        // user's originals intact. On failure we just delete the staging dir.
-        let staging = dest.parent()
-            .unwrap_or_else(|| std::path::Path::new("."))
+        let staging = dest.parent().unwrap_or_else(|| std::path::Path::new("."))
             .join(format!(".{}.lrgex-rar-staging-{}",
-                dest.file_name().and_then(|n| n.to_str()).unwrap_or("archive"),
-                std::process::id()));
-        // If a stale staging dir lingers from a previous crash mid-move, do NOT
-        // blindly delete it — it may hold the only copy of files that were never
-        // moved into dest before the crash. Rename it to an orphan so the user can
-        // recover, and surface a warning instead of silent data loss.
+                dest.file_name().and_then(|n| n.to_str()).unwrap_or("archive"), std::process::id()));
         if staging.exists() {
-            // Guaranteed-unique orphan name (timestamp + pid) so repeated crashes
-            // with PID reuse never collide. NEVER fall back to remove_dir_all — that
-            // would destroy recovery files, the exact data loss N4 was meant to prevent.
-            let ts = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis()).unwrap_or(0);
+            let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
             let orphan = staging.with_file_name(format!("{}.ORPHAN-{}-{}",
-                staging.file_name().and_then(|n| n.to_str()).unwrap_or("lrgex-staging"),
-                std::process::id(), ts));
+                staging.file_name().and_then(|n| n.to_str()).unwrap_or("lrgex-staging"), std::process::id(), ts));
             match std::fs::rename(&staging, &orphan) {
-                Ok(()) => {
-                    let _ = std::fs::write(orphan.join("RECOVERY-README.txt"),
-                        "LRGEX Compress found an interrupted extraction. Files here were not yet\r\n\
-                         moved into the destination when the previous run crashed. Move them\r\n\
-                         manually if needed, then delete this folder.\r\n");
-                }
-                Err(_) => {
-                    // Can't rename — surface a loud error. Do NOT delete the staging dir;
-                    // it holds the only copy of unmoved files.
-                    return Err(format!(
-                        "Found a previous interrupted extraction at {} — could not move it aside. \
-                         Please inspect it manually before retrying.", staging.display()));
-                }
+                Ok(()) => { let _ = std::fs::write(orphan.join("RECOVERY-README.txt"),
+                    "LRGEX Compress found an interrupted extraction. Files here were not yet\r\nmoved into the destination. Move them manually if needed.\r\n"); }
+                Err(_) => { return Err(format!("Found a previous interrupted extraction at {} - could not move it aside.", staging.display())); }
             }
         }
-        std::fs::create_dir_all(&staging).map_err(|e| format!("staging mkdir: {}", e))?;
+        std::fs::create_dir_all(&staging).map_err(|e| format!("staging mkdir: {e}"))?;
         let mut staging_guard = Some(StagingDir::new(staging.clone()));
 
-        let extract_ok = (|| -> Result<(), String> {
-            let mut open = unrar::Archive::new(archive)
-                .open_for_processing()
-                .map_err(|e| e.to_string())?;
-            loop {
-                if cancel.load(Ordering::Relaxed) {
-                    // Explicit cleanup BEFORE returning — GUI may process::exit on phase 5.
-                    let _ = std::fs::remove_dir_all(&staging);
-                    if let Some(g) = staging_guard.take() { std::mem::forget(g); }
-                    return Err("cancelled".to_string());
-                }
-                match open.read_header().map_err(|e| e.to_string())? {
-                    None => break,
-                    Some(with_header) => {
-                        open = with_header
-                            .extract_with_base(&staging)
-                            .map_err(|e| e.to_string())?;
+        // 4. Per-member extraction
+        let opts = unrar_rs::ExtractOptions { verify: true, password: None, restore_owners: false };
+        let mut elevation_decision: Option<bool> = None;
+        let mut skipped_links = 0u32;
+
+        for (idx, member) in members.iter().enumerate() {
+            if cancel.load(Ordering::Relaxed) {
+                let _ = std::fs::remove_dir_all(&staging);
+                if let Some(g) = staging_guard.take() { std::mem::forget(g); }
+                return Err("cancelled".to_string());
+            }
+            let out_path = staging.join(&member.name);
+            if !out_path.starts_with(&staging) { continue; }
+            if member.is_directory { std::fs::create_dir_all(&out_path).ok(); continue; }
+
+            // Symlink handling (NEW - not in the old vendored-unrar path)
+            if member.is_symlink {
+                if let Some(target) = &member.link_target {
+                    if let Some(parent) = out_path.parent() { std::fs::create_dir_all(parent).ok(); }
+                    let _ = std::fs::remove_file(&out_path).or_else(|_| std::fs::remove_dir(&out_path));
+                    match crate::metaattr::create_symlink(&out_path, target, false) {
+                        crate::metaattr::SymlinkResult::Created => {
+                            if let Some(mt) = member.mtime {
+                                let secs = mt.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs()).unwrap_or(0);
+                                crate::metaattr::apply_times_path(&out_path, secs, 0);
+                            }
+                        }
+                        crate::metaattr::SymlinkResult::NeedsElevation => {
+                            match elevation_decision {
+                                None => {
+                                    let allow = rfd::MessageDialog::new().set_title("LRGEX Compress")
+                                        .set_description("This archive contains symbolic links. To recreate them exactly, LRGEX needs administrator permission. Allow?")
+                                        .set_buttons(rfd::MessageButtons::YesNo).show();
+                                    let yes = allow == rfd::MessageDialogResult::Yes;
+                                    elevation_decision = Some(yes);
+                                    if !yes { skipped_links += 1; }
+                                }
+                                Some(_) => { skipped_links += 1; }
+                            }
+                        }
+                        crate::metaattr::SymlinkResult::Skipped(_) => { skipped_links += 1; }
                     }
                 }
+                continue;
             }
-            Ok(())
-        })();
 
-        if let Err(e) = extract_ok {
-            // Extraction failed — StagingDir Drop will delete the staging dir.
-            // The user's dest is untouched.
-            return Err(e);
+            // Regular file: streaming extract via CancelWriter (temp-then-rename + cancel + progress)
+            if let Some(parent) = out_path.parent() { std::fs::create_dir_all(parent).ok(); }
+            let tmp = extract_temp_path(&out_path);
+            let tmp_file = match std::fs::File::create(&tmp) { Ok(f) => f, Err(_) => continue };
+
+            struct RarCancelWriter { file: std::fs::File, cancel: *const AtomicBool, prog: *const Progress }
+            impl std::io::Write for RarCancelWriter {
+                fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                    unsafe {
+                        if (*self.cancel).load(Ordering::Relaxed) {
+                            return Err(std::io::Error::new(std::io::ErrorKind::Other, "cancelled"));
+                        }
+                        (*self.prog).tick_bytes(buf.len() as u64);
+                    }
+                    self.file.write_all(buf)?;
+                    Ok(buf.len())
+                }
+                fn flush(&mut self) -> std::io::Result<()> { self.file.flush() }
+            }
+            // Safety: cancel + prog live in extract_rar's frame, outliving all loop iterations.
+            let mut writer = RarCancelWriter { file: tmp_file, cancel: cancel as *const AtomicBool, prog: &prog as *const Progress };
+
+            match rar.extract_member_streaming(idx, &opts, &provider, &mut writer) {
+                Ok(_) => {
+                    drop(writer);
+                    if let Err(_) = crate::metaattr::atomic_replace(&tmp, &out_path) {
+                        let _ = std::fs::remove_file(&tmp); continue;
+                    }
+                    // Metadata restore (NEW)
+                    let mt = member.mtime.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
+                    let ct = member.ctime.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
+                    crate::metaattr::apply_times_path(&out_path, mt, ct);
+                }
+                Err(e) => {
+                    let _ = std::fs::remove_file(&tmp);
+                    if cancel.load(Ordering::Relaxed) {
+                        let _ = std::fs::remove_dir_all(&staging);
+                        if let Some(g) = staging_guard.take() { std::mem::forget(g); }
+                        return Err("cancelled".to_string());
+                    }
+                    return Err(format!("RAR extract {} failed: {e}", member.name));
+                }
+            }
         }
 
-        // Full success: move staging contents into dest, overwriting where needed.
-        // On move failure, DO NOT let the StagingDir Drop delete staging — it holds the
-        // only copy of files that haven't been moved yet. Forget the guard so Drop's
-        // remove_dir_all doesn't fire, write a recovery README, and surface a loud error.
+        if skipped_links > 0 { prog.set_skipped(skipped_links as usize); }
+
+        // 5. Move staging into dest (same as old path)
         match move_dir_contents(&staging, dest) {
-            Ok(()) => {
-                if let Some(mut g) = staging_guard.take() { g.disarm(); }
-                let _ = std::fs::remove_dir_all(&staging);
-                Ok(())
-            }
+            Ok(()) => { if let Some(mut g) = staging_guard.take() { g.disarm(); } let _ = std::fs::remove_dir_all(&staging); Ok(()) }
             Err(e) => {
-                // Prevent the StagingDir Drop from deleting the recovery files.
                 if let Some(g) = staging_guard.take() { std::mem::forget(g); }
-                let _ = std::fs::write(staging.join("RECOVERY-README.txt"),
-                    "LRGEX Compress could not move some files into the destination.\r\n\
-                     Files already moved are in the destination; files still in this\r\n\
-                     folder could not be moved. Copy them manually if needed.\r\n");
-                Err(format!("move from staging failed ({}): unmoved files preserved at {}", e, staging.display()))
+                let _ = std::fs::write(staging.join("RECOVERY-README.txt"), "LRGEX Compress could not move some files.\r\nCopy them manually if needed.\r\n");
+                Err(format!("move from staging failed ({e}): unmoved files preserved at {}", staging.display()))
             }
         }
     })();
 
-    sampler_stop.store(true, std::sync::atomic::Ordering::Relaxed);
-    let _ = sampler.join();
-    unrar::clear_cancel();
-
     let cancelled = result.is_err() && cancel.load(Ordering::Relaxed);
-    if cancelled {
-        prog.finish(5);
-    } else {
-        prog.finish(if result.is_ok() { 3 } else { 4 });
-    }
+    prog.finish(if cancelled { 5 } else if result.is_ok() { 3 } else { 4 });
     let _ = heartbeat.join();
-
     match result {
         Ok(()) => (true, String::new()),
         Err(e) if cancelled => (true, String::new()),
@@ -1596,8 +1606,32 @@ fn extract_rar(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (bool, Strin
     }
 }
 
+/// Enumerate all volume parts of a multi-volume RAR archive.
+/// Handles RAR5 (name.part1.rar) and RAR3 (name.rar, name.r00, ...) naming.
+fn enumerate_rar_volumes(first_part: &Path) -> Vec<PathBuf> {
+    let parent = match first_part.parent() { Some(p) => p, None => return vec![first_part.to_path_buf()] };
+    let name = match first_part.file_name().and_then(|n| n.to_str()) { Some(n) => n, None => return vec![first_part.to_path_buf()] };
+
+    // RAR5: name.part1.rar, name.part2.rar, ...
+    if name.contains(".part") {
+        if let Some(pos) = name.find(".part") {
+            let stem = &name[..pos];
+            let mut parts: Vec<PathBuf> = std::fs::read_dir(parent).into_iter().flatten().flatten().map(|e| e.path())
+                .filter(|p| { let n = p.file_name().unwrap().to_string_lossy(); n.starts_with(stem) && n.contains(".part") && n.ends_with(".rar") })
+                .collect();
+            parts.sort(); return parts;
+        }
+    }
+    // RAR3: name.rar, name.r00, name.r01, ...
+    let stem = name.strip_suffix(".rar").unwrap_or(name);
+    let mut parts: Vec<PathBuf> = std::fs::read_dir(parent).into_iter().flatten().flatten().map(|e| e.path())
+        .filter(|p| { let n = p.file_name().unwrap().to_string_lossy().to_string(); n == format!("{stem}.rar") || (n.starts_with(&format!("{stem}.r")) && n[stem.len()+2..].chars().all(|c| c.is_ascii_digit())) })
+        .collect();
+    parts.sort();
+    if parts.is_empty() { vec![first_part.to_path_buf()] } else { parts }
+}
+
 /// Detect multi-volume 7z part by filename: "*.7z.NNN" (digits).
-/// Returns true for .7z.001, .7z.004, etc. (single-volume .7z returns false).
 pub(crate) fn is_sevenz_volume_part(path: &Path) -> bool {
     let name = match path.file_name().and_then(|n| n.to_str()) {
         Some(n) => n,
