@@ -1,4 +1,66 @@
-# Patch Notes - Version 1.6.0 - Current
+# Patch Notes - Version 1.7.0 - Current
+
+## ✨ New Features
+
+- **Integrity checksum**: `.zgx` archives now include zstd XXHash64 checksum verification on extract.
+  Detects storage corruption, bad transfers, and bit rot before you lose data. Zero measurable
+  speed cost (~6ms per 256MB — within run-to-run noise).
+- **RAR extraction rewritten in pure Rust**: replaces the vendored C unrar library with
+  `unrar-rs` (pure Rust, no C dependencies). Adds:
+  - Symbolic link preservation (asks admin once, recreates links exactly)
+  - mtime + ctime restore on extracted files
+  - Windows attributes restore (ReadOnly, Hidden, etc.)
+  - Instant mid-file cancel (custom Writer aborts on cancel flag)
+  - Multi-volume support (part1.rar, part2.rar, ...)
+- **7z metadata restore**: extracted 7z files now preserve mtime, ctime (when carried),
+  and Windows attributes.
+- **7z symlink support**: symlinks stored as reparse points in .7z archives are now
+  detected and recreated (with path-traversal guard for security).
+- **Instant feedback on click**: the progress window now shows an animated sweep the
+  moment you click Compress or Extract — no more frozen 0% bar while the engine spins up.
+
+## 🔧 Fixes
+
+- **7z overwrite+cancel data loss** (critical): extracting a .7z over an existing file,
+  then cancelling, no longer destroys the user's original file. All 7z extraction now
+  uses temp-then-rename (same safe pattern as .zgx and .zip).
+- **ctime clobber on every extract** (critical): every extracted file was getting
+  creation time set to January 1, 1970. The bug was in `apply_times_handle` —
+  `secs_to_filetime(0)` is NOT a zero FILETIME (it's 1601+epoch_offset = 1970-01-01).
+  The "NULL if zero" guard never fired. Fixed: branch on the INPUT value, not the
+  converted FILETIME.
+- **7z mtime lost**: 7z extraction was giving every file NOW() as last-modified time.
+  Now reads `entry.last_modified_date()` from sevenz-rust2 and restores it.
+- **Checksum failure silently swallowed**: `include_checksum(true)` was discarding
+  the Result with `let _ =`. Now propagates via `.expect()` — a checksum failure
+  surfaces as an error instead of silently shipping without integrity.
+- **Test harness pipe deadlock**: integration tests could hang when the spawned exe
+  produced >64KB of stdout (pipe buffer fill). Fixed with `Stdio::null()`.
+
+## 🧪 Quality
+
+- **49 automated tests** covering every format, every metadata field, cancel,
+  multi-volume, crash-safety, and overwrite+cancel data-loss scenarios.
+  - No `#[ignore]`d tests hiding gaps — every test runs automatically.
+  - RAR + 7z tests auto-detect external tools (WinRAR / 7-Zip) and run when present.
+- **Vendored C unrar crate removed** (210KB of C source). RAR extraction is 100% pure Rust.
+- **License**: switched from MIT to GPL-3.0-or-later (unrar-rs is GPL-3.0 + UnRAR restriction).
+
+## ⚠️ Known Limitations
+
+- **Encrypted RAR**: password-protected `.rar` files are not supported. Extraction will
+  fail or hang — there is no password input in the extract path. A future version may
+  add a password prompt.
+- **7z symlinks**: requires Administrator or Developer Mode to create symlinks on Windows.
+  Without elevation, symlinks in .7z archives are skipped silently.
+- **zip ctime**: the ZIP format has no creation time field — cannot be preserved.
+- **7z ctime**: 7-Zip does not store creation time by default (only with `-mtc=on`).
+  Restored when present, absent when not.
+- **RAR4**: unrar-rs claims support but could not be tested (WinRAR 7.23 creates RAR5 only).
+
+---
+
+# Patch Notes - Version 1.6.0
 
 ## ✨ New Features
 
