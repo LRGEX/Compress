@@ -18,7 +18,7 @@ mod update;
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use slint::{Timer, TimerMode};
@@ -854,12 +854,41 @@ fn run_one(op_label: String, op_detail: Option<String>, cancellable: bool, dest:
     let auto_close = Arc::new(AtomicBool::new(false));
     let auto_close_clone = auto_close.clone();
     let close_timer = Timer::default();
+    // Stall detection: track bytes_done across timer ticks. If it hasn't changed
+    // in 15s during an active operation, the decoder is likely stuck on corrupt
+    // data. Show an error instead of letting the GUI hang forever.
+    let last_bytes: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
+    let last_change: Arc<AtomicU64> = Arc::new(AtomicU64::new(0)); // epoch ms of last bytes_done change
+    let last_bytes_timer = last_bytes.clone();
+    let last_change_timer = last_change.clone();
     timer.start(TimerMode::Repeated, Duration::from_millis(200), move || {
         let app = match weak.upgrade() {
             Some(a) => a,
             None => return,
         };
         if let Some(s) = progress::read_status() {
+            // Stall detection: if bytes_done hasn't changed in 15s during active
+            // extraction/compression, the decoder is likely stuck on corrupt data.
+            // Show an error instead of hanging forever. This is a pure observation —
+            // never touches the read stream or the decoder.
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64).unwrap_or(0);
+            let prev_bytes = last_bytes_timer.swap(s.bytes_done, Ordering::Relaxed);
+            if s.bytes_done != prev_bytes {
+                last_change_timer.store(now_ms, Ordering::Relaxed);
+            }
+            let stalled = s.phase < 3 && s.bytes_total > 0 && s.bytes_done > 0 && {
+                let last = last_change_timer.load(Ordering::Relaxed);
+                last > 0 && now_ms.saturating_sub(last) > 15_000
+            };
+            if stalled {
+                app.set_done(true);
+                app.set_result("Archive appears corrupt - decompression stalled".into());
+                app.set_result_color(slint::Color::from_rgb_u8(0xf4, 0x43, 0x36));
+                let _ = slint::quit_event_loop();
+                return;
+            }
             if s.bytes_total > 0 && s.bytes_done > 0 {
                 // Both known and progress has started → determinate percentage bar.
                 // (bytes_done > 0 filters the zstd-buffering window where bytes_total is
