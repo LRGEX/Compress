@@ -321,12 +321,12 @@ fn is_zip_encrypted(archive: &Path) -> bool {
         Ok(mut za) => {
             // Check all three encryption signals per entry:
             // 1. encrypted() flag (ZipCrypto bit 0)
-            // 2. AES compression method (WinZip AES-256 — encrypted() may be false for these)
-            // 3. PasswordRequired error on open (catch-all)
+            // 2. AES compression method (WinZip AES-256 — encrypted() may be false)
+            // 3. PasswordRequired error on by_index (catch-all for 7-Zip-created AES zips)
             (0..za.len()).any(|i| {
                 match za.by_index(i) {
                     Ok(e) => e.encrypted() || e.compression() == zip::CompressionMethod::AES,
-                    Err(e) => e.to_string().contains("Password"),
+                    Err(e) => matches!(e, zip::result::ZipError::UnsupportedArchive(msg) if msg == zip::result::ZipError::PASSWORD_REQUIRED),
                 }
             })
         }
@@ -2450,5 +2450,62 @@ mod tests {
             }
         }
         out
+    }
+
+    /// Test: does is_zip_encrypted detect AES-256 encrypted zips?
+    /// Uses 7-Zip to create a real AES-256 encrypted zip, then calls the REAL
+    /// is_zip_encrypted function (not a copy) directly.
+    #[test]
+    fn zip_aes256_encryption_detected() {
+        let sevenz = std::path::Path::new(r"C:\Program Files\7-Zip\7z.exe");
+        if !sevenz.exists() { eprintln!("SKIP: 7-Zip not found"); return; }
+        use std::process::Command;
+
+        let tmp = std::env::temp_dir().join(format!("lrgex-zipenc-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let src = tmp.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("a.txt"), b"aes encrypted test").unwrap();
+
+        let archive = tmp.join("test.zip");
+        let out = Command::new(sevenz)
+            .args(["a", "-tzip", "-ptestpass", "-mem=AES256",
+                   &archive.to_string_lossy(),
+                   &src.join("a.txt").to_string_lossy()])
+            .output().expect("7z failed");
+        assert!(out.status.success(), "7z failed");
+
+        // Call the REAL is_encrypted (full chain: detect_format + is_zip_encrypted)
+        let detected = is_encrypted(&archive);
+        eprintln!("is_encrypted returned: {detected}");
+        assert!(detected, "is_encrypted returned false for AES-256 encrypted zip");
+        eprintln!("PASS: AES-256 zip encryption detected via full is_encrypted chain");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Negative test: non-encrypted zip must NOT be detected as encrypted.
+    #[test]
+    fn zip_not_encrypted_returns_false() {
+        let tmp = std::env::temp_dir().join(format!("lrgex-zipnoenc-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let src = tmp.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("a.txt"), b"not encrypted").unwrap();
+
+        let archive = tmp.join("plain.zip");
+        let f = std::fs::File::create(&archive).unwrap();
+        let mut z = zip::ZipWriter::new(f);
+        let opts = zip::write::SimpleFileOptions::default();
+        z.start_file("a.txt", opts).unwrap();
+        z.write_all(b"not encrypted").unwrap();
+        z.finish().unwrap();
+
+        assert!(!is_encrypted(&archive), "non-encrypted zip detected as encrypted (false positive)");
+        eprintln!("PASS: non-encrypted zip correctly NOT detected");
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
