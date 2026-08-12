@@ -117,7 +117,7 @@ fn is_fatal_extract_err(e: &std::io::Error) -> bool {
 ///  - additionally resolve the target relative to the link's own directory and
 ///    confirm the canonicalized result stays inside `dest_root`
 fn is_safe_link_target(target: &str, link_path: &Path, dest_root: &Path) -> bool {
-    use std::path::Component;
+    
 
     // Empty target — nothing to link to.
     if target.is_empty() { return false; }
@@ -497,7 +497,7 @@ fn extract_zgx(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (bool, Strin
     let zstd_magic = [0x28u8, 0xb5, 0x2f, 0xfd];
     let lrgex_magic = *b"LRGEX";
 
-    let (uncompressed_total, zstd_start_offset) = if bytes_read >= 6 && head[0..5] == lrgex_magic {
+    let (uncompressed_total, _zstd_start_offset) = if bytes_read >= 6 && head[0..5] == lrgex_magic {
         // LRGEX magic present.
         let version = head[5];
         if version != 0x01 {
@@ -645,7 +645,7 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path, c
     // batches' entries). Surfaced next to the destination so the user can find it.
     let mut skipped_details: Vec<(PathBuf, std::io::Error)> = Vec::new();
 
-    let mut entries = match tar.entries() {
+    let entries = match tar.entries() {
         Ok(e) => e,
         Err(e) => return ZgxOutcome::Failed(format!("read entries: {}", e)),
     };
@@ -723,7 +723,7 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path, c
                 .filter_map(|(path, data, meta)| {
                     let tmp = extract_temp_path(path);
                     // Guard the temp for panic safety. Disarmed after the rename succeeds.
-                    let mut guard = PartialFile::new(tmp.clone());
+                    let guard = PartialFile::new(tmp.clone());
                     let mut f = match std::fs::File::create(&tmp) {
                         Ok(f) => f,
                         Err(e) => return Some((path.clone(), e)),
@@ -983,7 +983,7 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path, c
             let _ = f.set_len(size);
             // Guard the TEMP file: on panic/cancel mid-write, delete the temp so we
             // don't leak a multi-GB orphan. Disarmed after the successful rename.
-            let mut guard = PartialFile::new(tmp.clone());
+            let guard = PartialFile::new(tmp.clone());
             // Write 4 MB chunks straight from the tar entry to the File — NO BufWriter.
             use std::io::{Read, Write};
             let mut chunk = vec![0u8; 4 * 1024 * 1024];
@@ -1289,7 +1289,14 @@ fn extract_zip_impl(archive: &Path, dest: &Path, cancel: &AtomicBool, password: 
         let mut za = zip::ZipArchive::new(file).map_err(|e| format!("corrupt zip: {}", e))?;
         // Pre-scan: sum uncompressed sizes so the bar tracks decompressed bytes (not
         // compressed on-disk size — which would overshoot for compressible archives).
-        let total_uncompressed: u64 = (0..za.len()).map(|i| za.by_index(i).map(|e| e.size()).unwrap_or(0)).sum();
+        let total_uncompressed: u64 = (0..za.len()).map(|i| {
+            if let Some(pw) = password {
+                let opts = zip::read::ZipReadOptions::new().password(Some(pw.as_bytes()));
+                za.by_index_with_options(i, opts).map(|e| e.size()).unwrap_or(0)
+            } else {
+                za.by_index(i).map(|e| e.size()).unwrap_or(0)
+            }
+        }).sum();
         prog.set_totals(0, total_uncompressed);
         std::fs::create_dir_all(dest).map_err(|e| format!("cannot create dest: {}", e))?;
 
@@ -1306,7 +1313,12 @@ fn extract_zip_impl(archive: &Path, dest: &Path, cancel: &AtomicBool, password: 
             if cancel.load(Ordering::Relaxed) {
                 return Err("__LRGEX_CANCEL__".to_string());
             }
-            let mut entry = za.by_index(i).map_err(|e| format!("entry {}: {}", i, e))?;
+            let mut entry = if let Some(pw) = password {
+                let opts = zip::read::ZipReadOptions::new().password(Some(pw.as_bytes()));
+                za.by_index_with_options(i, opts).map_err(|e| format!("entry {}: {}", i, e))?
+            } else {
+                za.by_index(i).map_err(|e| format!("entry {}: {}", i, e))?
+            };
             // zip-slip guard: enclosed_name() returns a sanitized path or None for unsafe
             // names (e.g. containing `..` or absolute paths). Skip those entirely.
             let rel = match entry.enclosed_name() {
@@ -1324,7 +1336,7 @@ fn extract_zip_impl(archive: &Path, dest: &Path, cancel: &AtomicBool, password: 
                 }
                 let mut target = Vec::with_capacity(entry.size() as usize);
                 let mut counting = ZipCountingReader { inner: &mut entry, prog: &prog, cancel: Some(cancel) };
-                std::io::Read::read_to_end(&mut counting, &mut target).map_err(|e| format!("read link {}: {}", rel.display(), e))?;;
+                std::io::Read::read_to_end(&mut counting, &mut target).map_err(|e| format!("read link {}: {}", rel.display(), e))?;
                 let target = String::from_utf8_lossy(&target).trim_end_matches(['\0', '\r', '\n']).to_string();
                 // Validate the TARGET so a crafted zip can't create a link pointing
                 // outside the destination.
@@ -1381,7 +1393,7 @@ fn extract_zip_impl(archive: &Path, dest: &Path, cancel: &AtomicBool, password: 
                 // the final path on success. The user's original is never touched until
                 // the rename — no truncation, no partial-overwrite data loss.
                 let tmp = extract_temp_path(&outpath);
-                let mut guard = PartialFile::new(tmp.clone());
+                let guard = PartialFile::new(tmp.clone());
                 let outf = std::fs::File::create(&tmp).map_err(|e| format!("create {}: {}", rel.display(), e))?;
                 let mut counting = ZipCountingReader { inner: &mut entry, prog: &prog, cancel: Some(cancel) };
                 let mut bw = std::io::BufWriter::new(&outf);
@@ -1662,7 +1674,7 @@ fn extract_rar_impl(archive: &Path, dest: &Path, cancel: &AtomicBool, password: 
 
         // 5. Move staging into dest (same as old path)
         match move_dir_contents(&staging, dest) {
-            Ok(()) => { if let Some(mut g) = staging_guard.take() { g.disarm(); } let _ = std::fs::remove_dir_all(&staging); Ok(()) }
+            Ok(()) => { if let Some(g) = staging_guard.take() { g.disarm(); } let _ = std::fs::remove_dir_all(&staging); Ok(()) }
             Err(e) => {
                 if let Some(g) = staging_guard.take() { std::mem::forget(g); }
                 let _ = std::fs::write(staging.join("RECOVERY-README.txt"), "LRGEX Compress could not move some files.\r\nCopy them manually if needed.\r\n");
@@ -1676,7 +1688,7 @@ fn extract_rar_impl(archive: &Path, dest: &Path, cancel: &AtomicBool, password: 
     let _ = heartbeat.join();
     match result {
         Ok(()) => (true, String::new()),
-        Err(e) if cancelled => (true, String::new()),
+        Err(_e) if cancelled => (true, String::new()),
         Err(e) => (false, e),
     }
 }
@@ -1769,7 +1781,7 @@ fn sevenz_write_entry_via_temp(
     // Guard the temp: on Drop (cancel/panic/error) delete the temp. pre_existed is
     // false because the temp is brand-new — the GUARD'S contract only ever deletes
     // temps, NEVER the user's final-path file.
-    let mut guard = PartialFile::new(tmp.clone());
+    let guard = PartialFile::new(tmp.clone());
     let mut out = std::fs::File::create(&tmp)
         .map_err(|e| sevenz_rust2::Error::Other(format!("create: {}", e).into()))?;
     let mut buf = [0u8; 65536];
@@ -2026,7 +2038,7 @@ fn extract_7z_multi(parts: &[PathBuf], dest: &Path, cancel: &AtomicBool, label: 
 
     match result {
         Ok(()) => (true, String::new()),
-        Err(e) if cancelled => (true, String::new()),
+        Err(_e) if cancelled => (true, String::new()),
         Err(e) => (false, e),
     }
 }
@@ -2113,7 +2125,7 @@ fn extract_7z_single(archive: &Path, dest: &Path, cancel: &AtomicBool, label: St
 
     match result {
         Ok(()) => (true, String::new()),
-        Err(e) if cancelled => (true, String::new()),
+        Err(_e) if cancelled => (true, String::new()),
         Err(e) => (false, e),
     }
 }
