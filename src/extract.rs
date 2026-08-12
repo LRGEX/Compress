@@ -278,6 +278,85 @@ fn detect_format(path: &Path) -> Option<Format> {
 
 /// Top-level dispatcher. Routes to the right handler by detected format.
 pub fn extract_archive(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (bool, String) {
+    extract_archive_with_password(archive, dest, cancel, None)
+}
+
+/// Extract with an optional password for encrypted archives.
+/// Detect if an archive is encrypted (needs a password). Best-effort per format:
+/// - RAR: unrar-rs metadata().is_encrypted
+/// - 7z: try opening; if Error::PasswordRequired, it's encrypted
+/// - zip: check central directory for encrypted flag
+/// - zgx: never encrypted (our format has no encryption)
+pub fn is_encrypted(archive: &Path) -> bool {
+    if crate::segment::parse_split_part(archive).is_some() { return false; } // split zgx
+    if is_sevenz_volume_part(archive) {
+        // 7z multi-volume
+        return is_7z_encrypted(archive);
+    }
+    match detect_format(archive) {
+        Some(Format::Zgx) => false,
+        Some(Format::Zip) => is_zip_encrypted(archive),
+        Some(Format::Rar) => is_rar_encrypted(archive),
+        Some(Format::SevenZ) => is_7z_encrypted(archive),
+        None => false,
+    }
+}
+
+fn is_rar_encrypted(archive: &Path) -> bool {
+    let file = match std::fs::File::open(archive) { Ok(f) => f, Err(_) => return false };
+    match unrar_rs::RarArchive::open(file) {
+        Ok(rar) => {
+            let meta = rar.metadata();
+            // Check BOTH archive-level encryption (-hp, headers encrypted)
+            // AND member-level encryption (-p, file data encrypted but headers readable)
+            meta.is_encrypted || meta.members.iter().any(|m| m.is_encrypted)
+        }
+        Err(_) => false,
+    }
+}
+
+fn is_zip_encrypted(archive: &Path) -> bool {
+    let file = match std::fs::File::open(archive) { Ok(f) => f, Err(_) => return false };
+    match zip::ZipArchive::new(file) {
+        Ok(mut za) => (0..za.len()).any(|i| {
+            za.by_index(i).ok().map(|e| e.encrypted()).unwrap_or(false)
+        }),
+        Err(_) => false,
+    }
+}
+
+fn is_7z_encrypted(archive: &Path) -> bool {
+    // Detect 7z encryption: try decompress_file (no password) to a temp dir.
+    // If it fails with PasswordRequired, the archive is encrypted.
+    let tmpdir = std::env::temp_dir().join(format!("lrgex-7z-enc-check-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmpdir);
+    let _ = std::fs::create_dir_all(&tmpdir);
+    match sevenz_rust2::decompress_file(archive, &tmpdir) {
+        Ok(_) => { let _ = std::fs::remove_dir_all(&tmpdir); false }
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&tmpdir);
+            let msg = e.to_string();
+            msg.contains("password") || msg.contains("Password")
+        }
+    }
+}
+
+/// RAR: thread password directly into extract_rar
+fn extract_rar_with_password(archive: &Path, dest: &Path, cancel: &AtomicBool, password: Option<&str>) -> (bool, String) {
+    extract_rar_impl(archive, dest, cancel, password)
+}
+
+/// 7z: thread password directly into extract_7z
+fn extract_7z_with_password(archive: &Path, dest: &Path, cancel: &AtomicBool, password: Option<&str>) -> (bool, String) {
+    extract_7z_impl(archive, dest, cancel, password)
+}
+
+/// zip: thread password directly into extract_zip
+fn extract_zip_with_password(archive: &Path, dest: &Path, cancel: &AtomicBool, password: Option<&str>) -> (bool, String) {
+    extract_zip_impl(archive, dest, cancel, password)
+}
+
+pub fn extract_archive_with_password(archive: &Path, dest: &Path, cancel: &AtomicBool, password: Option<&str>) -> (bool, String) {
     // Split .zgx detection FIRST (by filename pattern) — before magic-byte detect.
     if crate::segment::parse_split_part(archive).is_some() {
         return extract_split_zgx(archive, dest, cancel);
@@ -285,13 +364,13 @@ pub fn extract_archive(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (boo
     // Multi-volume 7z detection by filename pattern (.7z.NNN) — before magic-byte
     // detect, because only .7z.001 has the signature and extension() returns "NNN".
     if is_sevenz_volume_part(archive) {
-        return extract_7z(archive, dest, cancel);
+        return extract_7z_with_password(archive, dest, cancel, None);
     }
     match detect_format(archive) {
         Some(Format::Zgx) => extract_zgx(archive, dest, cancel),
-        Some(Format::Zip) => extract_zip(archive, dest, cancel),
-        Some(Format::Rar) => extract_rar(archive, dest, cancel),
-        Some(Format::SevenZ) => extract_7z(archive, dest, cancel),
+        Some(Format::Zip) => extract_zip_with_password(archive, dest, cancel, password),
+        Some(Format::Rar) => extract_rar_with_password(archive, dest, cancel, password),
+        Some(Format::SevenZ) => extract_7z_with_password(archive, dest, cancel, password),
         None => (false, "Unrecognized archive format".to_string()),
     }
 }
@@ -1189,7 +1268,7 @@ fn split_has_conflicts(archive: &Path, dest: &Path) -> bool {
 /// mode if present), and symlinks (target stored as entry data — zip convention).
 /// Zip does NOT carry CreationTime or Windows-specific attributes, so those aren't
 /// restored (nothing to restore — we don't strip anything that's actually there).
-fn extract_zip(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (bool, String) {
+fn extract_zip_impl(archive: &Path, dest: &Path, cancel: &AtomicBool, password: Option<&str>) -> (bool, String) {
     progress::clear_status();
     let label = archive
         .file_name()
@@ -1421,7 +1500,7 @@ fn rar_totals(archive: &Path) -> (usize, u64) {
 ///   - symlink preservation (member.is_symlink + link_target → create_symlink + elevation)
 ///   - Windows attributes restoration (member.attributes → apply_attrs_normalized)
 ///   - ctime restoration (member.ctime → apply_times_path, when carried)
-fn extract_rar(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (bool, String) {
+fn extract_rar_impl(archive: &Path, dest: &Path, cancel: &AtomicBool, password: Option<&str>) -> (bool, String) {
     // RAR extraction via unrar-rs. See doc comment above for full design.
     progress::clear_status();
 
@@ -1478,7 +1557,12 @@ fn extract_rar(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (bool, Strin
         let mut staging_guard = Some(StagingDir::new(staging.clone()));
 
         // 4. Per-member extraction
-        let opts = unrar_rs::ExtractOptions { verify: true, password: None, restore_owners: false };
+        // Use password from the parameter (threaded through from the prompt)
+        let opts = unrar_rs::ExtractOptions {
+            verify: true,
+            password: password.map(|s| s.to_string()),
+            restore_owners: false,
+        };
         let mut elevation_decision: Option<bool> = None;
         let mut skipped_links = 0u32;
 
@@ -1766,7 +1850,7 @@ fn entry_mtime_secs(entry: &sevenz_rust2::SevenZArchiveEntry) -> Option<u64> {
     SevenzMeta::from_entry(entry).mtime_secs
 }
 
-fn extract_7z(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (bool, String) {
+fn extract_7z_impl(archive: &Path, dest: &Path, cancel: &AtomicBool, password: Option<&str>) -> (bool, String) {
     progress::clear_status();
     // Multi-volume 7z: parts are named file.7z.001, file.7z.002, ...
     // (there is NO plain file.7z — the first part is .7z.001).
@@ -1803,10 +1887,10 @@ fn extract_7z(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (bool, String
                 }
                 if parts.len() > 1 {
                     // Multi-volume — concat all parts into one stream.
-                    return extract_7z_multi(&parts, dest, cancel, name.to_string());
+                    return extract_7z_multi(&parts, dest, cancel, name.to_string(), password);
                 }
                 // Only .001 exists, no .002 — treat as single-volume.
-                return extract_7z_single(&first_path, dest, cancel, name.to_string());
+                return extract_7z_single(&first_path, dest, cancel, name.to_string(), password);
             }
         }
     }
@@ -1816,14 +1900,14 @@ fn extract_7z(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (bool, String
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
-    extract_7z_single(archive, dest, cancel, label)
+    extract_7z_single(archive, dest, cancel, label, password)
 }
 
 /// Multi-volume 7z — concat all parts (.001/.002/...) into a temp file, then
 /// decompress that single file. Simpler and more reliable than a custom
 /// cross-part Read+Seek adapter (7z's header lives at EOF, so any boundary
 /// bug dooms it).
-fn extract_7z_multi(parts: &[PathBuf], dest: &Path, cancel: &AtomicBool, label: String) -> (bool, String) {
+fn extract_7z_multi(parts: &[PathBuf], dest: &Path, cancel: &AtomicBool, label: String, password: Option<&str>) -> (bool, String) {
     let prog = Progress::new(&label);
     let heartbeat = prog.spawn_writer();
     prog.set_phase(0);
@@ -1872,9 +1956,12 @@ fn extract_7z_multi(parts: &[PathBuf], dest: &Path, cancel: &AtomicBool, label: 
         // Decompress the concatenated single file.
         let prog_arc = prog.clone();
         let dest_buf = dest.to_path_buf();
-        sevenz_rust2::decompress_file_with_extract_fn(
-            &tmp_file,
+        let pw7z = password.map(sevenz_rust2::Password::from).unwrap_or_else(sevenz_rust2::Password::empty);
+        let reader = std::io::BufReader::new(std::fs::File::open(&tmp_file).unwrap());
+        sevenz_rust2::decompress_with_extract_fn_and_password(
+            reader,
             dest,
+            pw7z,
             move |entry, rdr, out_path| -> Result<bool, sevenz_rust2::Error> {
                 if cancel.load(Ordering::Relaxed) {
                     return Ok(false);
@@ -1940,7 +2027,7 @@ fn extract_7z_multi(parts: &[PathBuf], dest: &Path, cancel: &AtomicBool, label: 
     }
 }
 
-fn extract_7z_single(archive: &Path, dest: &Path, cancel: &AtomicBool, label: String) -> (bool, String) {
+fn extract_7z_single(archive: &Path, dest: &Path, cancel: &AtomicBool, label: String, password: Option<&str>) -> (bool, String) {
     progress::clear_status();
     let prog = Progress::new(&label);
     let heartbeat = prog.spawn_writer();
@@ -1959,10 +2046,12 @@ fn extract_7z_single(archive: &Path, dest: &Path, cancel: &AtomicBool, label: St
     // by move is safe and needs no unsafe pointer tricks.
     let prog_arc = prog.clone();
     let dest_buf = dest.to_path_buf();
-
-    let result = sevenz_rust2::decompress_file_with_extract_fn(
-        archive,
+    let pw7z = password.map(sevenz_rust2::Password::from).unwrap_or_else(sevenz_rust2::Password::empty);
+    let reader = std::io::BufReader::new(std::fs::File::open(archive).unwrap());
+    let result = sevenz_rust2::decompress_with_extract_fn_and_password(
+        reader,
         dest,
+        pw7z,
         move |entry, reader, out_path| -> Result<bool, sevenz_rust2::Error> {
             // Cancel check — between files.
             if cancel.load(Ordering::Relaxed) {

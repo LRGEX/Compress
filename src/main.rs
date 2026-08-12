@@ -255,6 +255,38 @@ slint::slint! {
             }
         }
     }
+
+    export component PasswordWindow inherits Window {
+        title: "LRGEX Compress - Password";
+        background: #1e1e1e;
+        preferred-width: 340px;
+        preferred-height: 160px;
+        in-out property <string> password-text: "";
+        callback accepted(bool);
+
+        VerticalBox {
+            Text {
+                text: "This archive is encrypted. Enter password:";
+                color: #e0e0e0;
+                font-size: 14px;
+                wrap: word-wrap;
+            }
+
+            LineEdit {
+                text <=> root.password-text;
+                placeholder-text: "Password";
+                preferred-width: 280px;
+                input-type: password;
+                // Auto-focus: grab keyboard so the user can type immediately.
+                edited => { self.focus(); }
+            }
+
+            HorizontalBox {
+                Button { text: "Cancel"; clicked => { root.accepted(false); } }
+                Button { text: "Extract"; clicked => { root.accepted(true); } }
+            }
+        }
+    }
 }
 
 fn show_help() {
@@ -356,6 +388,31 @@ fn confirm_extract_overwrite(dest_name: &str) -> bool {
         .set_buttons(rfd::MessageButtons::YesNo)
         .show()
         == rfd::MessageDialogResult::Yes
+}
+
+/// Show a password prompt for encrypted archives. Returns Some(password) if the user
+/// entered one and clicked Extract, or None if they cancelled.
+fn prompt_password() -> Option<String> {
+    let app = match PasswordWindow::new() {
+        Ok(a) => a,
+        Err(e) => {
+            show_error(&format!("UI error: {}", e));
+            return None;
+        }
+    };
+    let accepted = Arc::new(AtomicBool::new(false));
+    let accepted_clone = accepted.clone();
+    app.on_accepted(move |ok| {
+        accepted_clone.store(ok, Ordering::Relaxed);
+        let _ = slint::quit_event_loop();
+    });
+    let _ = app.run();
+    if accepted.load(Ordering::Relaxed) {
+        let pw = app.get_password_text().to_string();
+        if pw.is_empty() { None } else { Some(pw) }
+    } else {
+        None
+    }
 }
 
 /// Guard so the VEH logs exactly once (no recursion on re-entry).
@@ -596,7 +653,16 @@ fn main() {
                 return; // user clicked No — abort
             }
         }
-        run_one(op_label, Some(op_detail), true, dest, OpKind::Extract(archive));
+        // Check if archive is encrypted — prompt for password if needed.
+        let password = if extract::is_encrypted(&archive) {
+            match prompt_password() {
+                Some(pw) => Some(pw),
+                None => return, // user cancelled password prompt
+            }
+        } else {
+            None
+        };
+        run_one(op_label, Some(op_detail), true, dest, OpKind::Extract(archive, password));
         return;
     }
 
@@ -670,11 +736,11 @@ fn main() {
 }
 
 enum OpKind {
-    Extract(PathBuf),
     CompressOne(PathBuf),
     CompressMany(Vec<PathBuf>),
     CompressSplit(PathBuf, u32), // (folder, segment_size_mb)
     CompressSplitMany(Vec<PathBuf>, u32), // (inputs, segment_size_mb)
+    Extract(PathBuf, Option<String>), // (archive, optional password)
 }
 
 fn run_one(op_label: String, op_detail: Option<String>, cancellable: bool, dest: PathBuf, op: OpKind) {
@@ -700,7 +766,7 @@ fn run_one(op_label: String, op_detail: Option<String>, cancellable: bool, dest:
         // silently killing the worker thread (which would leave the GUI hanging).
         let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let result = match op {
-            OpKind::Extract(a) => extract::extract_archive(&a, &dest, &cancel_for_thread),
+            OpKind::Extract(a, pw) => extract::extract_archive_with_password(&a, &dest, &cancel_for_thread, pw.as_deref()),
             OpKind::CompressOne(f) => {
                 let r = compress::compress_folder(&f, &dest, &[], &cancel_for_thread);
                 (r.0, if r.1.is_empty() { String::new() } else { r.1.join(", ") })

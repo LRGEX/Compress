@@ -39,7 +39,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 zip = { version = "8", default-features = false, features = ["deflate-flate2-zlib-ng", "deflate64", "bzip2", "zstd", "lzma", "time", "aes-crypto"] }
-sevenz-rust2 = "0.7"
+sevenz-rust2 = { version = "0.7", features = ["aes256"] }
 unrar-rs = "0.4"
 
 [dev-dependencies]
