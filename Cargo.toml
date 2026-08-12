@@ -37,7 +37,6 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
-unrar = "0.5"
 zip = { version = "8", default-features = false, features = ["deflate-flate2-zlib-ng", "deflate64", "bzip2", "zstd", "lzma", "time", "aes-crypto"] }
 sevenz-rust2 = "0.7"
 unrar-rs = "0.4"
@@ -61,5 +60,4 @@ strip = true
 debug = "line-tables-only"
 
 [patch.crates-io]
-unrar = { path = "vendor/unrar" }
 libz-ng-sys = { path = "vendor/libz-ng-sys" }

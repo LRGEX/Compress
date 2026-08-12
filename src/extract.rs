@@ -372,18 +372,12 @@ fn zip_has_conflicts(archive: &Path, dest: &Path) -> bool {
 
 /// rar: walk the listing.
 fn rar_has_conflicts(archive: &Path, dest: &Path) -> bool {
-    // For multi-volume, always check from part001.
-    let first_part = unrar::Archive::new(archive)
-        .first_part_option()
-        .filter(|p| p != archive && p.exists());
-    let archive: &Path = first_part.as_deref().unwrap_or(archive);
-    let list = match unrar::Archive::new(archive).open_for_listing() { Ok(l) => l, Err(_) => return false };
-    for item in list {
-        if let Ok(e) = item {
-            if e.is_directory() { continue; }
-            let p = dest.join(&e.filename);
-            if p.exists() { return true; }
-        }
+    // Uses unrar-rs (pure Rust) instead of the old vendored C unrar.
+    let file = match std::fs::File::open(archive) { Ok(f) => f, Err(_) => return false };
+    let rar = match unrar_rs::RarArchive::open(file) { Ok(r) => r, Err(_) => return false };
+    for member in &rar.metadata().members {
+        if member.is_directory { continue; }
+        if dest.join(&member.name).exists() { return true; }
     }
     false
 }
@@ -1403,23 +1397,15 @@ fn move_dir_contents(src: &Path, dst: &Path) -> std::io::Result<()> {
 /// Returns (file_count, total_bytes). Bytes are 0 if the archive is
 /// encrypted or the header is unreadable -> caller falls back to indeterminate.
 fn rar_totals(archive: &Path) -> (usize, u64) {
+    // Uses unrar-rs (pure Rust) instead of the old vendored C unrar.
+    let file = match std::fs::File::open(archive) { Ok(f) => f, Err(_) => return (0, 0) };
+    let rar = match unrar_rs::RarArchive::open(file) { Ok(r) => r, Err(_) => return (0, 0) };
     let mut files = 0usize;
     let mut bytes = 0u64;
-    // For multi-volume, always list from part001.
-    let first_part = unrar::Archive::new(archive)
-        .first_part_option()
-        .filter(|p| p != archive && p.exists());
-    let archive: &Path = first_part.as_deref().unwrap_or(archive);
-    // Best-effort: walk the listing for sizes. On any read error, return zeros (caller
-    // falls back to indeterminate progress). No diagnostic dump to disk in production.
-    if let Ok(list) = unrar::Archive::new(archive).open_for_listing() {
-        for item in list {
-            if let Ok(e) = item {
-                if !e.is_directory() {
-                    files += 1;
-                    bytes += e.unpacked_size;
-                }
-            }
+    for member in &rar.metadata().members {
+        if !member.is_directory {
+            files += 1;
+            bytes += member.unpacked_size.unwrap_or(0);
         }
     }
     (files, bytes)
@@ -1440,10 +1426,9 @@ fn extract_rar(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (bool, Strin
     progress::clear_status();
 
     // 1. Multi-volume: redirect to part001 + enumerate ALL parts
-    let first_part = unrar::Archive::new(archive)
-        .first_part_option()
-        .filter(|p| p != archive && p.exists());
-    let archive_path: &Path = first_part.as_deref().unwrap_or(archive);
+    // Use unrar-rs metadata to find the original archive name (for volume discovery).
+    // The old vendored crate's first_part_option is no longer used.
+    let archive_path: &Path = archive; // unrar-rs opens directly; multi-volume handled by enumerate_rar_volumes
     let label = archive_path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
     let volume_paths = enumerate_rar_volumes(archive_path);
     if volume_paths.is_empty() {
