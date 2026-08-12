@@ -541,6 +541,10 @@ fn extract_zgx(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (bool, Strin
             return (false, format!("corrupt archive (zstd): {}", e));
         }
     };
+    // Direct decoder path with cancel support. The zstd Decoder auto-verifies
+    // the XXHash64 checksum atomically within each read() call — no separate
+    // thread needed (a thread-based stall detector would leak partial bytes
+    // before the checksum error arrives, causing silent corruption).
     let counting = ByteReader::with_cancel(decoder, prog.clone(), cancel);
     let buf_decoder = std::io::BufReader::with_capacity(256 * 1024, counting);
     let mut tar = tar::Archive::new(buf_decoder);

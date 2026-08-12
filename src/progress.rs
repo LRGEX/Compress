@@ -198,6 +198,7 @@ impl<R: Read> Read for ByteReader<R> {
     }
 }
 
+
 /// Parsed status for the CLI reader.
 #[derive(serde::Deserialize)]
 pub struct Status {
