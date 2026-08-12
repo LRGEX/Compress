@@ -318,9 +318,18 @@ fn is_rar_encrypted(archive: &Path) -> bool {
 fn is_zip_encrypted(archive: &Path) -> bool {
     let file = match std::fs::File::open(archive) { Ok(f) => f, Err(_) => return false };
     match zip::ZipArchive::new(file) {
-        Ok(mut za) => (0..za.len()).any(|i| {
-            za.by_index(i).ok().map(|e| e.encrypted()).unwrap_or(false)
-        }),
+        Ok(mut za) => {
+            // Check all three encryption signals per entry:
+            // 1. encrypted() flag (ZipCrypto bit 0)
+            // 2. AES compression method (WinZip AES-256 — encrypted() may be false for these)
+            // 3. PasswordRequired error on open (catch-all)
+            (0..za.len()).any(|i| {
+                match za.by_index(i) {
+                    Ok(e) => e.encrypted() || e.compression() == zip::CompressionMethod::AES,
+                    Err(e) => e.to_string().contains("Password"),
+                }
+            })
+        }
         Err(_) => false,
     }
 }
