@@ -56,6 +56,12 @@ pub fn run(args: &[&str], timeout: Duration) -> i32 {
     let start = Instant::now();
     let mut cmd = Command::new(exe());
     cmd.args(args);
+    // IMPORTANT: drain stdout/stderr. The default is a pipe the harness NEVER reads,
+    // so once the engine writes >64KB (progress JSON / error spam) it blocks on the pipe
+    // write forever — looks like a 'corrupt-archive hang' but is really a test bug.
+    // Stdio::null() discards the engine's output (we assert on files on disk, not stdout).
+    cmd.stdout(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::null());
     let mut child = cmd.spawn().unwrap_or_else(|e| panic!("failed to spawn exe: {e}"));
     loop {
         match child.try_wait() {
