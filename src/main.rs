@@ -198,7 +198,7 @@ slint::slint! {
         VerticalBox {
             Text {
                 text: root.message;
-                color: #f44336;
+                color: #cb803c;
                 wrap: word-wrap;
                 font-size: 14px;
             }
@@ -299,6 +299,7 @@ fn show_help() {
          lrgex-compress <folder-or-file>      Compress → <name>.zgx\n\
          lrgex-compress -x <archive>          Extract → <name>\\ folder\n\
          lrgex-compress -x -h <archive>       Extract here (into the archive's folder)\n\
+         lrgex-compress -x -p <password> <archive>   Extract encrypted archive\n\
          lrgex-compress --split [--size <MB>] <folder-or-file>\n\
                                               Compress → split .partNNN.zgx\n\
                                               (default 30 MB; GUI prompts if --size omitted)\n\
@@ -604,14 +605,46 @@ fn main() {
         return;
     }
 
+    // -p <password> flag: scan all args for it (works in any position)
+    let cli_password: Option<String> = {
+        let mut pw: Option<String> = None;
+        let mut i = 0;
+        while i < args.len() {
+            if args[i] == "-p" && i + 1 < args.len() {
+                pw = Some(args[i + 1].clone());
+                break;
+            }
+            i += 1;
+        }
+        pw
+    };
+
     let is_extract = args.len() >= 3 && args[1] == "-x";
 
     // --- EXTRACT path (no multi-select) ---
     if is_extract {
-        // -x <archive> = Extract to subfolder (current behavior)
-        // -xh <archive> = Extract Here (contents dumped into archive's parent)
-        let extract_here = args.len() >= 4 && args[2] == "-h";
-        let archive_path = if extract_here { &args[3] } else { &args[2] };
+        // Parse positional args, skipping flags (-p <value>, -h, -x, -p)
+        // This handles: -x archive | -x -h archive | -x -p pw archive | -x -p pw -h archive
+        let extract_here = args.iter().any(|a| a == "-h");
+        let archive_path = {
+            let mut found: Option<&String> = None;
+            let mut skip_next = false;
+            for (i, arg) in args.iter().enumerate() {
+                if i == 0 { continue; } // exe name
+                if skip_next { skip_next = false; continue; }
+                if arg == "-x" || arg == "-h" || arg == "-p" { 
+                    if arg == "-p" { skip_next = true; } // skip the password value
+                    continue; 
+                }
+                // First non-flag positional arg = the archive path
+                found = Some(arg);
+                break;
+            }
+            match found {
+                Some(p) => p,
+                None => { show_error("No archive specified for extraction."); return; }
+            }
+        };
         let archive = PathBuf::from(archive_path);
         // Finding #5: Path-length guard — Windows MAX_PATH is 260; paths near or over
         // that fail with a confusing "not found". Give a clear error instead.
@@ -654,7 +687,10 @@ fn main() {
             }
         }
         // Check if archive is encrypted — prompt for password if needed.
-        let password = if extract::is_encrypted(&archive) {
+        // If -p <password> was passed on CLI, use it directly (no GUI prompt).
+        let password = if let Some(ref pw) = cli_password {
+            Some(pw.clone())
+        } else if extract::is_encrypted(&archive) {
             match prompt_password() {
                 Some(pw) => Some(pw),
                 None => return, // user cancelled password prompt
