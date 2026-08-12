@@ -155,22 +155,36 @@ without any conversion.
 
 ---
 
-## Vendored dependencies
+## Dependencies
 
-This project vendors two crates with patches. See their README files for details.
+This project vendors one crate with a patch:
 
 | Crate | Version | Patch | Why |
 |---|---|---|---|
-| `vendor/unrar` | 0.5.8 | UCM_PROCESSDATA byte counter + cancel flag | `.rar` extraction progress bar + instant cancel |
 | `vendor/libz-ng-sys` | 1.1.29 | CMake static CRT defines (/MT + NDEBUG) | Self-contained exe (no VC++ redist needed) |
 
-If either patch is lost during a dependency bump, the app breaks (no .rar progress, or MSVCP140.dll missing on clean Windows).
+RAR extraction uses [`unrar-rs`](https://crates.io/crates/unrar-rs) 0.4.0 (pure Rust, no vendored C).
+
+**Note:** `unrar-rs` is licensed GPL-3.0-or-later with the UnRAR source-code restriction.
+Review compatibility with your distribution model.
+
+The previous vendored C `unrar` crate (0.5.8 with UCM_PROCESSDATA patch) was fully removed.
 
 ---
 
 ## License
 
 MIT License for LRGEX-authored code. See [LICENSE](LICENSE).
+
+RAR extraction: [`unrar-rs`](https://crates.io/crates/unrar-rs) — GPL-3.0-or-later + UnRAR restriction.
+
+> UnRAR source code may be used in any software to handle RAR archives without
+> limitations free of charge, but cannot be used to develop RAR (WinRAR) compatible
+> archiver and to re-create RAR compression algorithm, which is proprietary.
+> Distribution of modified UnRAR source code in separate form or as a part of other
+> software is permitted, provided that full text of this paragraph, starting from
+> "UnRAR source code" words, is included in license, or in documentation if license
+> is not available, and in source code comments of resulting package.
 
 UI built with [Slint](https://slint.dev) (Slint Royalty-free License).
 Third-party crates under their respective licenses (MIT / Apache-2.0 / BSD-3).
