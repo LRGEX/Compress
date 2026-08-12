@@ -1555,6 +1555,8 @@ fn extract_rar(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (bool, Strin
                     let mt = member.mtime.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
                     let ct = member.ctime.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
                     crate::metaattr::apply_times_path(&out_path, mt, ct);
+                    // Restore Windows attrs (member.attributes -> apply_attrs_normalized)
+                    crate::metaattr::apply_attrs_normalized(&out_path, member_attributes_to_win32(&member.attributes));
                 }
                 Err(e) => {
                     let _ = std::fs::remove_file(&tmp);
@@ -1589,6 +1591,12 @@ fn extract_rar(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (bool, Strin
         Err(e) if cancelled => (true, String::new()),
         Err(e) => (false, e),
     }
+}
+
+/// Extract the raw Windows dwFileAttributes u32 from unrar-rs's FileAttributes.
+/// FileAttributes is a newtype wrapping u64 — the low 32 bits are the Windows attrs.
+fn member_attributes_to_win32(attrs: &unrar_rs::types::FileAttributes) -> u32 {
+    attrs.0 as u32
 }
 
 /// Enumerate all volume parts of a multi-volume RAR archive.
@@ -1874,6 +1882,29 @@ fn extract_7z_multi(parts: &[PathBuf], dest: &Path, cancel: &AtomicBool, label: 
                 if !out_path.starts_with(&dest_buf) {
                     return Ok(true);
                 }
+                // Symlink detection: 7z stores symlinks as reparse points (bit 0x400 in
+                // windows_attributes). The content is the target path as UTF-8 (per py7zr spec).
+                const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+                if entry.has_windows_attributes && (entry.windows_attributes() & FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
+                    // Read the target path from the entry content (UTF-8 string)
+                    use std::io::Read;
+                    let mut target_buf = Vec::new();
+                    let _ = rdr.read_to_end(&mut target_buf);
+                    let target = String::from_utf8_lossy(&target_buf)
+                        .trim_end_matches('\0').trim().to_string();
+                    if !target.is_empty() {
+                        if let Some(parent) = out_path.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
+                        // Security: validate the symlink target — reject absolute paths
+                        // and anything escaping dest (same guard as zgx/zip).
+                        if is_safe_link_target(&target, &out_path, &dest_buf) {
+                            let _ = std::fs::remove_file(&out_path).or_else(|_| std::fs::remove_dir(&out_path));
+                            let _ = crate::metaattr::create_symlink(&out_path, &target, false);
+                        }
+                    }
+                    return Ok(true); // symlink handled — don't write as regular file
+                }
                 if entry.is_directory() {
                     std::fs::create_dir_all(out_path)
                         .map_err(|e| sevenz_rust2::Error::Other(format!("mkdir: {}", e).into()))?;
@@ -1941,6 +1972,25 @@ fn extract_7z_single(archive: &Path, dest: &Path, cancel: &AtomicBool, label: St
             // Path-traversal guard — reject anything escaping `dest`.
             if !out_path.starts_with(&dest_buf) {
                 return Ok(true); // skip this entry, keep going
+            }
+
+            // Symlink detection (same as single-volume path above)
+            const FILE_ATTRIBUTE_REPARSE_POINT_M: u32 = 0x400;
+            if entry.has_windows_attributes && (entry.windows_attributes() & FILE_ATTRIBUTE_REPARSE_POINT_M) != 0 {
+                use std::io::Read;
+                let mut target_buf = Vec::new();
+                let _ = reader.read_to_end(&mut target_buf);
+                let target = String::from_utf8_lossy(&target_buf)
+                    .trim_end_matches('\0').trim().to_string();
+                if !target.is_empty() {
+                    if let Some(parent) = out_path.parent() { let _ = std::fs::create_dir_all(parent); }
+                    // Security: validate target — reject paths escaping dest
+                    if is_safe_link_target(&target, &out_path, &dest_buf) {
+                        let _ = std::fs::remove_file(&out_path).or_else(|_| std::fs::remove_dir(&out_path));
+                        let _ = crate::metaattr::create_symlink(&out_path, &target, false);
+                    }
+                }
+                return Ok(true);
             }
 
             if entry.is_directory() {
