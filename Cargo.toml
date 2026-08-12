@@ -3,6 +3,7 @@ name = "lrgex_compress"
 version = "1.6.0"
 edition = "2021"
 description = "LRGEX Compress — standalone fast .tar.zst compressor/extractor"
+license = "GPL-3.0-or-later"
 
 [[bin]]
 name = "lrgex-compress"

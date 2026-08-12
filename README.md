@@ -14,7 +14,7 @@
 
 **Version 1.6.0**
 
-Free, open source, MIT licensed.
+Free, open source (GPL-3.0-or-later).
 
 [<img src="https://slint.dev/logo/slint-logo-simple-light.png" width="100" alt="Made with Slint">](https://slint.dev)
 
@@ -67,7 +67,7 @@ Extracts ZIP, RAR, 7z, and ZGX archives. You don't need WinRAR or 7-Zip installe
 - ✓ Instant cancel (compress + extract, all formats)
 - ✓ Clean archive names (`video.mp4` → `video.zgx`)
 - ✓ Ed25519 cryptographically signed auto-updates
-- ✓ MIT License
+- ✓ GPL-3.0-or-later License
 - ✓ No administrator required
 - ✓ Command-line support
 
@@ -174,7 +174,7 @@ The previous vendored C `unrar` crate (0.5.8 with UCM_PROCESSDATA patch) was ful
 
 ## License
 
-MIT License for LRGEX-authored code. See [LICENSE](LICENSE).
+GPL-3.0-or-later. See [LICENSE](LICENSE).
 
 RAR extraction: [`unrar-rs`](https://crates.io/crates/unrar-rs) — GPL-3.0-or-later + UnRAR restriction.
 
@@ -187,4 +187,4 @@ RAR extraction: [`unrar-rs`](https://crates.io/crates/unrar-rs) — GPL-3.0-or-l
 > is not available, and in source code comments of resulting package.
 
 UI built with [Slint](https://slint.dev) (Slint Royalty-free License).
-Third-party crates under their respective licenses (MIT / Apache-2.0 / BSD-3).
+Third-party crates under their respective licenses (Apache-2.0 / BSD-3 / GPL-3.0).
