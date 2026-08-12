@@ -1,4 +1,20 @@
-# Patch Notes - Version 1.7.0 - Current
+# Patch Notes - Version 1.7.1 - Current
+
+## 🔧 Fixes
+
+- **AES-256 encrypted ZIP detection**: 7-Zip-created encrypted ZIPs now correctly
+  detected via CompressionMethod::AES + PasswordRequired error (the zip crate's
+  `encrypted()` flag misses AES-256). Password prompt appears for these archives.
+- **Encrypted ZIP extraction**: pre-scan loop now uses password when summing file
+  sizes (was hitting encrypted entries first and erroring before extraction started).
+- **Progress watchdog**: corrupt archives that cause the decoder to stall now show
+  "Archive appears corrupt" after 15s instead of hanging forever.
+- **RAR4 support**: confirmed working (tested with real RAR4 archive from unrar.rs test data).
+- **Compiler warnings**: reduced from 27 to 15 via cargo fix.
+
+---
+
+# Patch Notes - Version 1.7.0
 
 ## ✨ New Features
 
