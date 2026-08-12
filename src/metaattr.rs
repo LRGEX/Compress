@@ -140,12 +140,17 @@ fn dur_to_secs(t: Option<SystemTime>) -> u64 {
 pub fn apply_times_handle(handle: HANDLE, mtime: u64, ctime: u64) {
     unsafe {
         let m_ft = secs_to_filetime(mtime);
-        let c_ft = secs_to_filetime(ctime);
+        let c_ft = secs_to_filetime(ctime); // declared in OUTER scope so the pointer stays valid
+        // ctime==0 means "source had no creation time" → pass NULL to SetFileTime so the
+        // file's existing creation time is left untouched. (Note: secs_to_filetime(0) is
+        // NOT a zero FILETIME — it's 1601+epoch_diff = 1970-01-01 — so we must branch on
+        // the INPUT being 0, not on the converted FILETIME. Branching on the FILETIME
+        // was a bug that clobbered ctime to 1970 on every extract via apply_times_path.)
         let _ = SetFileTime(
             handle,
-            opt_filetime(&c_ft), // CreationTime (NULL if zero → don't overwrite)
-            std::ptr::null(),    // LastAccessTime (NULL → leave untouched)
-            opt_filetime(&m_ft), // LastWriteTime
+            if ctime == 0 { std::ptr::null() } else { &c_ft as *const FILETIME }, // CreationTime
+            std::ptr::null(),                                                      // LastAccessTime (untouched)
+            if mtime == 0 { std::ptr::null() } else { &m_ft as *const FILETIME },  // LastWriteTime
         );
     }
 }
@@ -192,13 +197,6 @@ fn secs_to_100ns_i64(secs: u64) -> i64 {
     intervals as i64
 }
 
-fn opt_filetime(ft: &FILETIME) -> *const FILETIME {
-    if ft.dwLowDateTime == 0 && ft.dwHighDateTime == 0 {
-        std::ptr::null() // source had no value → don't zero the dest's existing time
-    } else {
-        ft as *const FILETIME
-    }
-}
 
 fn secs_to_filetime(secs: u64) -> FILETIME {
     // FILETIME = 100ns intervals since 1601-01-01. UNIX epoch is 11644473600s after 1601.

@@ -37,21 +37,28 @@ fn mtime_secs(p: &Path) -> u64 {
     m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0)
 }
 /// Read ctime via GetFileAttributesExW (Windows API) — more reliable than std's created().
-/// Returns 0 on failure.
-fn read_ctime_winapi(p: &Path) -> u64 {
+/// Returns Ok(unix_secs) on success, Err(win32_error_code) on API failure.
+fn read_ctime_winapi(p: &Path) -> Result<u64, u32> {
     use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::GetLastError;
     use windows_sys::Win32::Storage::FileSystem::GetFileAttributesExW;
     use windows_sys::Win32::Storage::FileSystem::WIN32_FILE_ATTRIBUTE_DATA;
     let mut wide: Vec<u16> = p.as_os_str().encode_wide().collect(); wide.push(0);
     let mut data: WIN32_FILE_ATTRIBUTE_DATA = unsafe { std::mem::zeroed() };
     let ok = unsafe { GetFileAttributesExW(wide.as_ptr(), 0, &mut data as *mut _ as *mut _) };
-    if ok == 0 { return 0; }
-    // ftCreationTime is 100ns intervals since 1601. Convert to unix secs.
+    if ok == 0 {
+        return Err(unsafe { GetLastError() });
+    }
     let lo = data.ftCreationTime.dwLowDateTime as u64;
     let hi = data.ftCreationTime.dwHighDateTime as u64;
     let intervals = (hi << 32) | lo;
-    if intervals == 0 { return 0; }
-    (intervals / 10_000_000).saturating_sub(11644473600)
+    // intervals==0 means 1601-01-01 = before unix epoch → saturating_sub yields 0.
+    // That's the "clobbered to 1970" signature (NULL CreationTime would NOT read as 0;
+    // it would read whatever the filesystem set on file creation).
+    if intervals < 11644473600 * 10_000_000 {
+        return Ok(0); // genuinely pre-epoch / zero
+    }
+    Ok((intervals / 10_000_000).saturating_sub(11644473600))
 }
 fn run_exe_blocking(exe: &Path, args: &[String], timeout: Duration) -> i32 {
     let start = Instant::now();
@@ -117,13 +124,19 @@ fn zip_mtime_round_trips() {
     // Defense (advisor): confirm ctime was NOT clobbered to 1970. apply_times_path(path, mt, 0)
     // passes ctime=0 which apply_times_handle treats as NULL (don't touch) — so ctime should
     // be roughly now(), NOT epoch 0. Read via the Windows API (std's created() can be flaky).
-    let got_ctime = read_ctime_winapi(&out_file);
-    if got_ctime > 0 {
-        assert!(got_ctime > 1_000_000_000, "ZIP CTIME CLOBBERED: got {got_ctime} (looks like 1970) — apply_times_path ctime=0 path may be destroying creation time");
-        eprintln!("PASS zip_mtime: mtime within DOS 2-sec granularity (got {got_mtime}), ctime preserved ({got_ctime})");
-    } else {
-        // ctime read failed (privilege/filesystem) — can't assert, but mtime is the real claim
-        eprintln!("PASS zip_mtime: mtime within DOS 2-sec granularity (got {got_mtime}); ctime read returned 0 (couldn't verify, mtime is the documented zip claim)");
+    match read_ctime_winapi(&out_file) {
+        Ok(ct) if ct > 1_000_000_000 => {
+            eprintln!("PASS zip_mtime: mtime within DOS 2-sec granularity (got {got_mtime}), ctime preserved ({ct})");
+        }
+        Ok(ct) => {
+            // ctime reads as 0 (or pre-epoch). This is a CONFIRMED CLOBBER, not a flaky read —
+            // the WinAPI call succeeded and returned 0. apply_times_path is destroying ctime.
+            panic!("ZIP CTIME CONFIRMED CLOBBERED to {ct}: apply_times_path(path, mt, 0) is setting ctime to 1970, not leaving it untouched. The opt_filetime(0)→NULL path is NOT working as the comment claims.");
+        }
+        Err(code) => {
+            // API failed — can't verify, but mtime is the documented claim. Print the error.
+            eprintln!("PASS zip_mtime: mtime within DOS 2-sec granularity (got {got_mtime}); ctime read WinAPI failed (err={code}) — mtime is the documented zip claim");
+        }
     }
 }
 
