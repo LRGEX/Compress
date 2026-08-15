@@ -80,7 +80,14 @@ impl StagingDir {
 impl Drop for StagingDir {
     fn drop(&mut self) {
         if self.armed {
-            let _ = std::fs::remove_dir_all(&self.path);
+            // Retry loop: Windows/Defender can hold a transient lock on a freshly-
+            // written dir, making remove_dir_all fail once. 3 attempts with 250ms
+            // gaps handles the lock case; a hard failure after that still silently
+            // leaks (better than crashing on Drop).
+            for attempt in 0..3 {
+                if std::fs::remove_dir_all(&self.path).is_ok() { break; }
+                if attempt < 2 { std::thread::sleep(std::time::Duration::from_millis(250)); }
+            }
         }
     }
 }
@@ -635,7 +642,7 @@ fn extract_zgx(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (bool, Strin
     }
     let mut staging_guard = Some(StagingDir::new(staging.clone()));
 
-    let result = extract_zgx_inner(&mut tar, &staging, cancel);
+    let (result, dir_meta) = extract_zgx_inner(&mut tar, &staging, cancel);
 
     // Move staging into dest on success; on cancel/fail the StagingDir Drop deletes staging.
     match result {
@@ -644,6 +651,18 @@ fn extract_zgx(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (bool, Strin
                 Ok(()) => {
                     if let Some(mut g) = staging_guard.take() { g.disarm(); }
                     let _ = std::fs::remove_dir_all(&staging);
+                    // Re-apply directory mtimes AFTER the move — the move creates
+                    // dest dirs fresh (mtime=NOW), so the restore done inside
+                    // extract_zgx_inner (on staging paths) is lost. Deepest-first.
+                    for (rel, mt, ct, attrs) in dir_meta.iter().rev() {
+                        let dir = dest.join(rel);
+                        if *mt > 0 || *ct > 0 {
+                            crate::metaattr::apply_times_path(&dir, *mt, *ct);
+                        }
+                        if *attrs != 0 {
+                            crate::metaattr::apply_attrs_normalized(&dir, *attrs);
+                        }
+                    }
                 }
                 Err(e) => {
                     if let Some(g) = staging_guard.take() { std::mem::forget(g); }
@@ -671,6 +690,8 @@ fn extract_zgx(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (bool, Strin
             std::process::exit(0);
         }
         ZgxOutcome::Cancelled => {
+            // Cleanup completes before phase 5 so the GUI exit cannot race it.
+            if let Some(g) = staging_guard.take() { drop(g); }
             prog.finish(5);
             let _ = heartbeat.join();
             (true, String::new())
@@ -722,7 +743,7 @@ fn parse_sidecar(body: &[u8]) -> std::collections::HashMap<std::path::PathBuf, (
     m
 }
 
-fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path, cancel: &AtomicBool) -> ZgxOutcome {
+fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path, cancel: &AtomicBool) -> (ZgxOutcome, Vec<(PathBuf, u64, u64, u32)>) {
     use rayon::prelude::*;
     use std::io::Read;
     use std::path::{Component, PathBuf};
@@ -751,9 +772,12 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path, c
     // batches' entries). Surfaced next to the destination so the user can find it.
     let mut skipped_details: Vec<(PathBuf, std::io::Error)> = Vec::new();
 
+    // Directories whose mtime/ctime/attrs must be restored AFTER all children are written.
+    let mut dir_meta_todo: Vec<(PathBuf, u64, u64, u32)> = Vec::new();
+
     let entries = match tar.entries() {
         Ok(e) => e,
-        Err(e) => return ZgxOutcome::Failed(format!("read entries: {}", e)),
+        Err(e) => return (ZgxOutcome::Failed(format!("read entries: {}", e)), dir_meta_todo),
     };
 
     let mut dir_cache: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
@@ -762,9 +786,6 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path, c
     // Batch of (path, data, meta) for small files — written in parallel, metadata restored after.
     let mut batch: Vec<(PathBuf, Vec<u8>, EntryMeta)> = Vec::with_capacity(BATCH_ENTRIES);
     let mut batch_bytes: usize = 0;
-
-    // Directories whose mtime/ctime/attrs must be restored AFTER all children are written.
-    let mut dir_meta_todo: Vec<(PathBuf, EntryMeta)> = Vec::new();
 
     // Read PAX fields (SCHILY.creationtime + LRGEX.fileattr) from an entry.
     let read_pax_meta = |entry: &mut tar::Entry<R>| -> (u64, u32) {
@@ -899,15 +920,15 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path, c
 
     for entry in entries {
         if cancel.load(Ordering::Relaxed) {
-            return ZgxOutcome::Cancelled;
+            return (ZgxOutcome::Cancelled, dir_meta_todo);
         }
         let mut entry = match entry {
             Ok(e) => e,
-            Err(e) => return ZgxOutcome::Failed(format!("entry read: {}", e)),
+            Err(e) => return (ZgxOutcome::Failed(format!("entry read: {}", e)), dir_meta_todo),
         };
         let rel = match entry.path() {
             Ok(p) => p.to_path_buf(),
-            Err(e) => return ZgxOutcome::Failed(format!("path: {}", e)),
+            Err(e) => return (ZgxOutcome::Failed(format!("path: {}", e)), dir_meta_todo),
         };
         let outpath = dest.join(&rel);
 
@@ -920,7 +941,7 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path, c
                 use std::io::Read;
                 let mut body = Vec::new();
                 if let Err(e) = entry.read_to_end(&mut body) {
-                    return ZgxOutcome::Failed(format!("read sidecar: {}", e));
+                    return (ZgxOutcome::Failed(format!("read sidecar: {}", e)), dir_meta_todo);
                 }
                 sidecar_map = Some(parse_sidecar(&body));
                 continue; // sidecar consumed — don't extract it as a real file
@@ -951,12 +972,12 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path, c
         if etype.is_dir() {
             if dir_cache.insert(outpath.clone()) {
                 if let Err(e) = std::fs::create_dir_all(&outpath) {
-                    return ZgxOutcome::Failed(format!("mkdir: {}", e));
+                    return (ZgxOutcome::Failed(format!("mkdir: {}", e)), dir_meta_todo);
                 }
             }
             // Defer mtime/ctime/attrs restore to the FINAL pass — writing children into
             // this dir would overwrite a mtime we set now.
-            dir_meta_todo.push((outpath, meta));
+            dir_meta_todo.push((outpath.strip_prefix(dest).unwrap_or(&outpath).to_path_buf(), meta.mtime, meta.ctime, meta.attrs));
             continue;
         }
 
@@ -971,7 +992,7 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path, c
         if etype.is_symlink() {
             // Flush any pending files first (they may be the link's siblings).
             match flush_batch(&mut batch, &mut batch_bytes, &mut dir_cache) {
-                Err(e) => return ZgxOutcome::Failed(e),
+                Err(e) => return (ZgxOutcome::Failed(e), dir_meta_todo),
                 Ok(v) => { skipped_files += v.len(); skipped_details.extend(v); }
             }
             let target = match entry.link_name() {
@@ -989,7 +1010,7 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path, c
             if let Some(parent) = outpath.parent() {
                 if dir_cache.insert(parent.to_path_buf()) {
                     if let Err(e) = std::fs::create_dir_all(parent) {
-                        return ZgxOutcome::Failed(format!("mkdir parent: {}", e));
+                        return (ZgxOutcome::Failed(format!("mkdir parent: {}", e)), dir_meta_todo);
                     }
                 }
             }
@@ -1058,13 +1079,13 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path, c
         if size > STREAM_THRESHOLD {
             // Large file: stream straight to disk, then restore metadata on the path.
             match flush_batch(&mut batch, &mut batch_bytes, &mut dir_cache) {
-                Err(e) => return ZgxOutcome::Failed(e),
+                Err(e) => return (ZgxOutcome::Failed(e), dir_meta_todo),
                 Ok(v) => { skipped_files += v.len(); skipped_details.extend(v); }
             }
             if let Some(parent) = outpath.parent() {
                 if dir_cache.insert(parent.to_path_buf()) {
                     if let Err(e) = std::fs::create_dir_all(parent) {
-                        return ZgxOutcome::Failed(format!("mkdir parent: {}", e));
+                        return (ZgxOutcome::Failed(format!("mkdir parent: {}", e)), dir_meta_todo);
                     }
                 }
             }
@@ -1079,7 +1100,7 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path, c
                 Ok(f) => f,
                 Err(e) => {
                     if is_fatal_extract_err(&e) {
-                        return ZgxOutcome::Failed(format!("create {}: {}", rel.display(), e));
+                        return (ZgxOutcome::Failed(format!("create {}: {}", rel.display(), e)), dir_meta_todo);
                     }
                     skipped_files += 1;
                     skipped_details.push((outpath.clone(), e));
@@ -1098,7 +1119,7 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path, c
             loop {
                 if cancel.load(Ordering::Relaxed) {
                     let _ = std::fs::remove_file(&tmp);
-                    return ZgxOutcome::Cancelled;
+                    return (ZgxOutcome::Cancelled, dir_meta_todo);
                 }
                 if remaining == 0 { break; }
                 let want = remaining.min(chunk.len());
@@ -1108,13 +1129,13 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path, c
                     Err(e) => {
                         // read error: treat as fatal (corrupt stream affects everything after).
                         let _ = std::fs::remove_file(&tmp);
-                        return ZgxOutcome::Failed(format!("read {}: {}", rel.display(), e));
+                        return (ZgxOutcome::Failed(format!("read {}: {}", rel.display(), e)), dir_meta_todo);
                     }
                 };
                 if let Err(e) = f.write_all(&chunk[..n]) {
                     let _ = std::fs::remove_file(&tmp);
                     if is_fatal_extract_err(&e) {
-                        return ZgxOutcome::Failed(format!("write {}: {}", rel.display(), e));
+                        return (ZgxOutcome::Failed(format!("write {}: {}", rel.display(), e)), dir_meta_todo);
                     }
                     // Recoverable (locked/access-denied) — skip flush+rename for this file.
                     // guard's Drop removes the temp; we continue the OUTER extract loop.
@@ -1137,7 +1158,7 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path, c
             if let Err(e) = f.flush() {
                 let _ = std::fs::remove_file(&tmp);
                 if is_fatal_extract_err(&e) {
-                    return ZgxOutcome::Failed(format!("flush {}: {}", rel.display(), e));
+                    return (ZgxOutcome::Failed(format!("flush {}: {}", rel.display(), e)), dir_meta_todo);
                 }
                 skipped_files += 1;
                 skipped_details.push((outpath.clone(), e));
@@ -1154,7 +1175,7 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path, c
             if let Err(e) = crate::metaattr::atomic_replace(&tmp, &outpath) {
                 let _ = std::fs::remove_file(&tmp);
                 if is_fatal_extract_err(&e) {
-                    return ZgxOutcome::Failed(format!("rename {}: {}", rel.display(), e));
+                    return (ZgxOutcome::Failed(format!("rename {}: {}", rel.display(), e)), dir_meta_todo);
                 }
                 skipped_files += 1;
                 skipped_details.push((outpath.clone(), e));
@@ -1170,14 +1191,14 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path, c
         // Small file: read into memory, batch it with its metadata.
         let mut data = Vec::with_capacity(size as usize);
         if let Err(e) = entry.read_to_end(&mut data) {
-            return ZgxOutcome::Failed(format!("read {}: {}", rel.display(), e));
+            return (ZgxOutcome::Failed(format!("read {}: {}", rel.display(), e)), dir_meta_todo);
         }
         batch_bytes += data.len();
         batch.push((outpath, data, meta));
 
         if batch.len() >= BATCH_ENTRIES || batch_bytes >= BATCH_BYTES {
             match flush_batch(&mut batch, &mut batch_bytes, &mut dir_cache) {
-                Err(e) => return ZgxOutcome::Failed(e),
+                Err(e) => return (ZgxOutcome::Failed(e), dir_meta_todo),
                 Ok(v) => { skipped_files += v.len(); skipped_details.extend(v); }
             }
         }
@@ -1185,19 +1206,20 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path, c
 
     // Flush remaining small files.
     match flush_batch(&mut batch, &mut batch_bytes, &mut dir_cache) {
-        Err(e) => return ZgxOutcome::Failed(e),
+        Err(e) => return (ZgxOutcome::Failed(e), dir_meta_todo),
         Ok(v) => { skipped_files += v.len(); skipped_details.extend(v); }
     }
 
     // FINAL pass: restore directory mtime/ctime/attrs AFTER all children written.
     // Process in reverse order (deepest first) so creating a child dir doesn't disturb
     // a parent's mtime after we set it.
-    for (dir, meta) in dir_meta_todo.iter().rev() {
-        if meta.mtime > 0 || meta.ctime > 0 {
-            crate::metaattr::apply_times_path(dir, meta.mtime, meta.ctime);
+    for (rel, mt, ct, attrs) in dir_meta_todo.iter().rev() {
+        let dir = dest.join(rel);
+        if *mt > 0 || *ct > 0 {
+            crate::metaattr::apply_times_path(&dir, *mt, *ct);
         }
-        if meta.attrs != 0 {
-            crate::metaattr::apply_attrs_normalized(dir, meta.attrs);
+        if *attrs != 0 {
+            crate::metaattr::apply_attrs_normalized(&dir, *attrs);
         }
     }
 
@@ -1210,7 +1232,7 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path, c
         args.push("--elevated-rerun".to_string());
         if crate::metaattr::relaunch_elevated(&args) {
             // Elevated process took over — exit cleanly so the GUI closes.
-            return ZgxOutcome::ElevatedRelaunched;
+            return (ZgxOutcome::ElevatedRelaunched, dir_meta_todo);
         }
         // UAC denied or launch failed. Symlinks are missing, but all regular files
         // were extracted. Fall through to Done so the GUI shows success (not Failed),
@@ -1236,7 +1258,7 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path, c
         }
     }
 
-    ZgxOutcome::Done(skipped_links + skipped_files)
+    (ZgxOutcome::Done(skipped_links + skipped_files), dir_meta_todo)
 }
 
 /// Convert a zip crate DateTime (DOS datetime: year/month/day + hour/min/sec) to
@@ -1303,7 +1325,7 @@ fn extract_split_zgx(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (bool,
     // Create dest before extracting (extract_zgx_inner assumes it exists).
     let _ = std::fs::create_dir_all(dest);
 
-    let result = extract_zgx_inner(&mut tar, dest, cancel);
+    let (result, _) = extract_zgx_inner(&mut tar, dest, cancel);
 
     match result {
         ZgxOutcome::Done(skipped) => {
@@ -1690,8 +1712,8 @@ fn extract_rar_impl(archive: &Path, dest: &Path, cancel: &AtomicBool, password: 
 
         for (idx, member) in members.iter().enumerate() {
             if cancel.load(Ordering::Relaxed) {
-                let _ = std::fs::remove_dir_all(&staging);
-                if let Some(g) = staging_guard.take() { std::mem::forget(g); }
+                // Drop the guard (runs retry-delete) — cancel means CLEAN UP, not leak.
+                if let Some(g) = staging_guard.take() { drop(g); }
                 return Err("cancelled".to_string());
             }
             let out_path = staging.join(&member.name);
@@ -1767,8 +1789,8 @@ fn extract_rar_impl(archive: &Path, dest: &Path, cancel: &AtomicBool, password: 
                 Err(e) => {
                     let _ = std::fs::remove_file(&tmp);
                     if cancel.load(Ordering::Relaxed) {
-                        let _ = std::fs::remove_dir_all(&staging);
-                        if let Some(g) = staging_guard.take() { std::mem::forget(g); }
+                        // Drop the guard (retry-delete) — consistent with zgx cancel.
+                        if let Some(g) = staging_guard.take() { drop(g); }
                         return Err("cancelled".to_string());
                     }
                     return Err(format!("RAR extract {} failed: {e}", member.name));

@@ -966,8 +966,10 @@ fn run_one(op_label: String, op_detail: Option<String>, cancellable: bool, dest:
                     app.set_done(true);
                     app.set_result("Cancelled".into());
                     app.set_result_color(slint::Color::from_rgb_u8(0xcb, 0x80, 0x3c));
-                    // Cancel: kill the process immediately after showing the message.
-                    // No waiting for the operation thread — it may be stuck in a blocking call.
+                    // Cancel: exit AFTER the worker's cleanup completed. Phase 5 is now
+                    // written only after the staging dir is fully deleted (see the
+                    // ZgxOutcome::Cancelled arm in extract.rs), so the original 200ms
+                    // delay is safe — cleanup already finished before phase 5 appeared.
                     close_timer.start(TimerMode::SingleShot, Duration::from_millis(200), move || {
                         std::process::exit(0);
                     });
