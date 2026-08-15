@@ -1,4 +1,26 @@
-# Patch Notes - Version 1.7.1 - Current
+# Patch Notes - Version 1.7.2 - Current
+
+## 🔧 Fixes
+
+- **Instant window on double-click**: the progress window now appears the moment you
+  extract an archive — no more 10-14 second invisible wait on large .zgx files.
+  The conflict scan and password prompt run after the window is visible.
+- **v3 .zgx format**: new archives include a file-path index — conflict checks are
+  instant even on 50GB archives (milliseconds instead of 30+ seconds of decompression).
+  Old v1 archives still work unchanged.
+- **Clean cancel**: cancelled extraction now removes the staging folder completely —
+  no half-extracted folders left behind.
+- **Dir mtime preserved**: folder timestamps survive the extract (the staging move
+  was resetting them to NOW).
+- **RAR cancel leak fixed**: cancelled RAR extraction was leaking the entire staging
+  folder — now cleaned up properly.
+- **Password prompt fixed**: encrypted RAR/7z/zip password prompt was deadlocked
+  (moved to a background thread where Slint windows can't run) — restored to main thread.
+- **RAR4 support confirmed**: tested with real RAR4 archive — works.
+
+---
+
+# Patch Notes - Version 1.7.1
 
 ## 🔧 Fixes
 

@@ -1,6 +1,6 @@
 [package]
 name = "lrgex_compress"
-version = "1.7.1"
+version = "1.7.2"
 edition = "2021"
 description = "LRGEX Compress — standalone fast .tar.zst compressor/extractor"
 license = "GPL-3.0-or-later"

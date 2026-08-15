@@ -13,7 +13,7 @@
 ; TO COMPILE: "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\lrgex-compress.iss
 
 #define MyAppName      "LRGEX Compress"
-#define MyAppVersion "1.7.1"
+#define MyAppVersion "1.7.2"
 #define MyAppPublisher "LRGEX"
 #define MyAppExeName   "lrgex-compress.exe"
 

@@ -12,7 +12,7 @@
   </ul>
 </div>
 
-**Version 1.7.1**
+**Version 1.7.2**
 
 Free, open source (GPL-3.0-or-later).
 
