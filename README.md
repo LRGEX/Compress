@@ -96,6 +96,90 @@ Extracts ZIP, RAR, 7z, and ZGX archives. You don't need WinRAR or 7-Zip installe
 
 ---
 
+## Benchmark
+
+Independent comparison against 7-Zip, WinRAR, and Windows ZIP — fastest legitimate compression preset for each competitor, zero configuration for LRGEX.
+
+**5 datasets · 4 compressors · 100 runs · 0 integrity failures**
+
+### Compression speed (median, MB/s)
+
+| Dataset | LRGEX | 7-Zip | WinRAR | Windows ZIP |
+|---|---:|---:|---:|---:|
+| Large files (3.6 GB) | **497** | 135 | 83 | 33 |
+| Mixed content (1.4 GB) | **314** | 130 | 90 | 32 |
+| Already compressed (1 GB) | **257** | 122 | 81 | 32 |
+| Highly compressible (270 MB) | 100 | **275** | 133 | 68 |
+| Many small files (10K) | 19 | **38** | 7 | 0.4 |
+
+### Overall: LRGEX **235.6 MB/s** · 7-Zip **138 MB/s** · WinRAR **78.9 MB/s** · Windows ZIP **32.6 MB/s**
+
+**LRGEX is 1.7× faster than 7-Zip overall** — fastest in 3 of 5 real-world categories.
+
+### Where LRGEX loses (honest results)
+- **7-Zip wins** on highly compressible data (275 vs 100 MB/s) and many-small-files (38 vs 19 MB/s)
+- **7-Zip extracts faster** (1.6×–6.9× depending on dataset)
+- **WinRAR compresses denser** on mixed content (ratio 1.163 vs 1.005) — at ~3.5× slower speed
+
+<details>
+<summary>Full methodology + per-dataset tables</summary>
+
+- Each application/dataset combination ran **5 times**; **median** published
+- All apps used their **fastest legitimate compression preset** — no Store/copy mode
+- LRGEX: zero configuration (as shipped) · 7-Zip: `-mx=1` · WinRAR: `-m1 -r` · Windows ZIP: `Compress-Archive Fastest`
+- Integrity verified: file count + size match on extraction, 100/100 PASS
+
+**Benchmark performed on Windows** using LRGEX Compress, 7-Zip, WinRAR and Windows ZIP. Five runs per configuration; median results shown. No store/no-compression mode. All archives were extracted and verified.
+
+#### Already Compressed (1 GB)
+
+| Application | Mode | Archive Size | Comp Time (s) | Speed (MB/s) | Extract (s) | Ratio | Integrity |
+|---|---|---:|---:|---:|---:|---:|---|
+| LRGEX | Zero configuration | 1040 MB | 4.04 | 257.2 | 3.07 | 1 | PASS |
+| 7-Zip | Fastest | 1040.1 MB | 8.52 | 122 | 1.08 | 1 | PASS |
+| WinRAR | Fastest | 1040 MB | 12.79 | 81.3 | 1.06 | 1 | PASS |
+| Windows ZIP | Fastest | 1040.3 MB | 32.18 | 32.3 | 1.86 | 1 | PASS |
+
+#### Highly Compressible (270 MB)
+
+| Application | Mode | Archive Size | Comp Time (s) | Speed (MB/s) | Extract (s) | Ratio | Integrity |
+|---|---|---:|---:|---:|---:|---:|---|
+| LRGEX | Zero configuration | 64.9 MB | 2.79 | 100.3 | 2.69 | 4.317 | PASS |
+| 7-Zip | Fastest | 63.5 MB | 1.02 | 275.1 | 0.39 | 4.411 | PASS |
+| WinRAR | Fastest | 64.1 MB | 2.11 | 132.6 | 0.95 | 4.368 | PASS |
+| Windows ZIP | Fastest | 72.2 MB | 4.15 | 67.5 | 2.29 | 3.88 | PASS |
+
+#### Large Files (3.6 GB)
+
+| Application | Mode | Archive Size | Comp Time (s) | Speed (MB/s) | Extract (s) | Ratio | Integrity |
+|---|---|---:|---:|---:|---:|---:|---|
+| LRGEX | Zero configuration | 3672.1 MB | 7.38 | 497.4 | 5.48 | 1 | PASS |
+| 7-Zip | Fastest | 3672.2 MB | 27.24 | 134.8 | 3.42 | 1 | PASS |
+| WinRAR | Fastest | 3672 MB | 44.03 | 83.4 | 3.14 | 1 | PASS |
+| Windows ZIP | Fastest | 3673.1 MB | 111.36 | 33 | 3.96 | 1 | PASS |
+
+#### Many Small Files (10,000 files)
+
+| Application | Mode | Archive Size | Comp Time (s) | Speed (MB/s) | Extract (s) | Ratio | Integrity |
+|---|---|---:|---:|---:|---:|---:|---|
+| LRGEX | Zero configuration | 54.3 MB | 2.79 | 19.4 | 14.34 | 0.994 | PASS |
+| 7-Zip | Fastest | 54.1 MB | 1.41 | 38.4 | 7.48 | 0.998 | PASS |
+| WinRAR | Fastest | 55.2 MB | 7.87 | 6.9 | 17.32 | 0.979 | PASS |
+| Windows ZIP | Fastest | 55.5 MB | 153.86 | 0.4 | 127.86 | 0.974 | PASS |
+
+#### Mixed Content (1.4 GB)
+
+| Application | Mode | Archive Size | Comp Time (s) | Speed (MB/s) | Extract (s) | Ratio | Integrity |
+|---|---|---:|---:|---:|---:|---:|---|
+| LRGEX | Zero configuration | 1390.5 MB | 4.46 | 313.8 | 3.68 | 1.005 | PASS |
+| 7-Zip | Fastest | 1391 MB | 10.75 | 130 | 1.43 | 1.005 | PASS |
+| WinRAR | Fastest | 1202.4 MB | 15.56 | 89.9 | 1.46 | 1.163 | PASS |
+| Windows ZIP | Fastest | 1392.6 MB | 44.44 | 31.5 | 3.22 | 1.004 | PASS |
+
+</details>
+
+---
+
 ## Installation
 
 1. Download the latest `LRGEX-Compress-setup.exe` from [Releases](https://github.com/LRGEX/Compress/releases)
