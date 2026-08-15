@@ -414,9 +414,34 @@ pub fn has_conflicts(archive: &Path, dest: &Path) -> bool {
 fn zgx_has_conflicts(archive: &Path, dest: &Path) -> bool {
     use std::io::{Read, Seek, SeekFrom};
     let mut file = match std::fs::File::open(archive) { Ok(f) => f, Err(_) => return false };
-    let mut head = [0u8; 16];
+    let mut head = [0u8; 22];
     let n = file.read(&mut head).unwrap_or(0);
+
+    // V3 with path index: instant conflict check — no tar decompression needed.
+    if n >= 22 && &head[0..5] == b"LRGEX" && head[5] == 0x03 {
+        if let Ok(Some(paths)) = crate::compress::read_path_index(&mut file) {
+            for p in &paths {
+                // Same safety guard as the stream scan: skip absolute/non-normal paths.
+                let pb = std::path::Path::new(p);
+                if pb.is_absolute() { continue; }
+                if pb.components().any(|c| !matches!(c, std::path::Component::Normal(_) | std::path::Component::CurDir)) { continue; }
+                // Skip dir-like entries — a pre-existing dir is a harmless merge.
+                // The index includes both files and dirs from walk_tree.
+                let out = dest.join(p);
+                if out.is_dir() { continue; } // existing dir = harmless merge
+                if out.exists() { return true; }
+            }
+            return false;
+        }
+        // read_path_index failed on a v3 archive — fall through to stream scan.
+    }
+
     let start = if n >= 6 && &head[0..5] == b"LRGEX" && head[5] == 0x01 { 14 }
+               else if n >= 22 && &head[0..5] == b"LRGEX" && head[5] == 0x03 {
+                   // v3 with corrupt/failed index — still stream-scan via computed offset
+                   let il = u64::from_le_bytes([head[14], head[15], head[16], head[17], head[18], head[19], head[20], head[21]]);
+                   22 + il
+               }
                else if n >= 12 && head[8..12] == [0x28,0xb5,0x2f,0xfd] { 8 }
                else if n >= 4 && head[0..4] == [0x28,0xb5,0x2f,0xfd] { 0 }
                else { return false };
@@ -492,16 +517,17 @@ fn extract_zgx(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (bool, Strin
         }
     };
 
-    // Read first 16 bytes once, then branch on format.
-    //   Case 1: LRGEX magic (bytes 0-4 = "LRGEX") + version 0x01 → NEW format.
+    // Read first 22 bytes once, then branch on format.
+    //   Case 1: LRGEX magic + version 0x03 → V3 format (with path index).
+    //           Total at bytes 6-13, index_len at 14-21, index, then zstd stream.
+    //   Case 2: LRGEX magic + version 0x01 → V1 legacy (no index).
     //           Total at bytes 6-13, zstd stream at byte 14.
-    //   Case 2: LRGEX magic + unknown version → refuse (newer format).
-    //   Case 3: No LRGEX magic, but zstd magic (28 B5 2F FD) at byte 8 → LEGACY.
-    //           Total at bytes 0-7, zstd stream at byte 8 (exactly as today).
-    //   Case 4: Anything else → refuse (not a valid archive).
+    //   Case 3: LRGEX magic + version 0x02 → SPLIT format → wrong extractor, error.
+    //   Case 4: No LRGEX magic, but zstd magic at byte 8 → LEGACY.
+    //   Case 5: Anything else → refuse.
     use std::io::{Read, Seek, SeekFrom};
     let mut file = file;
-    let mut head = [0u8; 16];
+    let mut head = [0u8; 22];
     let bytes_read = file.read(&mut head).unwrap_or(0);
     let zstd_magic = [0x28u8, 0xb5, 0x2f, 0xfd];
     let lrgex_magic = *b"LRGEX";
@@ -509,12 +535,16 @@ fn extract_zgx(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (bool, Strin
     let (uncompressed_total, _zstd_start_offset) = if bytes_read >= 6 && head[0..5] == lrgex_magic {
         // LRGEX magic present.
         let version = head[5];
-        if version != 0x01 {
+        if version == 0x02 {
+            prog.finish(4);
+            let _ = heartbeat.join();
+            return (false, "This is a split archive — extract any part directly.".to_string());
+        }
+        if version != 0x01 && version != 0x03 {
             prog.finish(4);
             let _ = heartbeat.join();
             return (false, "This archive was created by a newer version of LRGEX Compress. Please update.".to_string());
         }
-        // NEW format: total at bytes 6-13, zstd at byte 14.
         if bytes_read < 14 {
             prog.finish(4);
             let _ = heartbeat.join();
@@ -522,9 +552,21 @@ fn extract_zgx(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (bool, Strin
         }
         let total = u64::from_le_bytes([head[6], head[7], head[8], head[9], head[10], head[11], head[12], head[13]]);
         let val = if total > 0 && total < arch_size * 100 { total } else { arch_size };
-        // Seek to byte 14 for the zstd decoder.
-        let _ = file.seek(SeekFrom::Start(14));
-        (val, 14)
+        if version == 0x03 {
+            // V3: index_len at bytes 14-21, then index blob, then zstd stream.
+            if bytes_read < 22 {
+                prog.finish(4);
+                let _ = heartbeat.join();
+                return (false, "Truncated v3 header.".to_string());
+            }
+            let index_len = u64::from_le_bytes([head[14], head[15], head[16], head[17], head[18], head[19], head[20], head[21]]);
+            let _ = file.seek(SeekFrom::Start(22 + index_len));
+            (val, 22 + index_len)
+        } else {
+            // V1: zstd at byte 14.
+            let _ = file.seek(SeekFrom::Start(14));
+            (val, 14)
+        }
     } else if bytes_read >= 12 && head[8..12] == zstd_magic {
         // LEGACY archive: 8-byte total at bytes 0-7, zstd at byte 8.
         let total = u64::from_le_bytes([head[0], head[1], head[2], head[3], head[4], head[5], head[6], head[7]]);
@@ -558,8 +600,63 @@ fn extract_zgx(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (bool, Strin
     let buf_decoder = std::io::BufReader::with_capacity(256 * 1024, counting);
     let mut tar = tar::Archive::new(buf_decoder);
 
-    let _ = std::fs::create_dir_all(dest);
-    let result = extract_zgx_inner(&mut tar, dest, cancel);
+    // Staging-dir isolation (same crash-safety pattern as RAR): extract everything to a
+    // hidden temp sibling first, then move into dest ONLY on full success. Cancel/fail
+    // deletes staging — the user's dest is never touched and no half-extracted folder remains.
+    let staging = dest.parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join(format!(".{}.lrgex-zgx-staging-{}",
+            dest.file_name().and_then(|n| n.to_str()).unwrap_or("archive"),
+            std::process::id()));
+    // Stale staging from a previous crash — same orphan recovery as RAR (never delete blindly)
+    if staging.exists() {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis()).unwrap_or(0);
+        let orphan = staging.with_file_name(format!("{}.ORPHAN-{}-{}",
+            staging.file_name().and_then(|n| n.to_str()).unwrap_or("lrgex-staging"),
+            std::process::id(), ts));
+        match std::fs::rename(&staging, &orphan) {
+            Ok(()) => { let _ = std::fs::write(orphan.join("RECOVERY-README.txt"),
+                "LRGEX Compress found an interrupted extraction. Files here were not yet\r\nmoved into the destination. Move them manually if needed.\r\n"); }
+            Err(_) => {
+                // Can't move aside — the staging dir may hold the ONLY copy of unmoved files.
+                // DO NOT delete. Surface a loud error (same as RAR).
+                prog.finish(4);
+                let _ = heartbeat.join();
+                return (false, format!("Found a previous interrupted extraction at {} — could not move it aside. Please inspect it manually.", staging.display()));
+            }
+        }
+    }
+    if std::fs::create_dir_all(&staging).is_err() {
+        prog.finish(4);
+        let _ = heartbeat.join();
+        return (false, "cannot create staging dir".to_string());
+    }
+    let mut staging_guard = Some(StagingDir::new(staging.clone()));
+
+    let result = extract_zgx_inner(&mut tar, &staging, cancel);
+
+    // Move staging into dest on success; on cancel/fail the StagingDir Drop deletes staging.
+    match result {
+        ZgxOutcome::Done(_) | ZgxOutcome::ElevatedRelaunched => {
+            match move_dir_contents(&staging, dest) {
+                Ok(()) => {
+                    if let Some(mut g) = staging_guard.take() { g.disarm(); }
+                    let _ = std::fs::remove_dir_all(&staging);
+                }
+                Err(e) => {
+                    if let Some(g) = staging_guard.take() { std::mem::forget(g); }
+                    let _ = std::fs::write(staging.join("RECOVERY-README.txt"),
+                        "LRGEX Compress could not move some files.\r\nCopy them manually if needed.\r\n");
+                    prog.finish(4);
+                    let _ = heartbeat.join();
+                    return (false, format!("move from staging failed ({e}): unmoved files preserved at {}", staging.display()));
+                }
+            }
+        }
+        _ => {}
+    }
 
     match result {
         ZgxOutcome::Done(skipped) => {

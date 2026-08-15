@@ -670,35 +670,11 @@ fn main() {
         } else {
             archive.with_extension("")
         };
-        // WinRAR-style overwrite check: scan the archive for entries that would
-        // overwrite existing files in the destination. If ANY conflict, prompt.
-        // Works for normal extract AND extract-here (both check archive contents).
-        // SKIP on elevated rerun — the non-elevated pass already wrote regular files
-        // (so they 'exist' now) and the user already approved. The rerun only recreates
-        // symlinks; prompting again would confuse the user and risk 'No' → silent loss.
-        if !elevated_rerun && extract::has_conflicts(&archive, &dest) {
-            let dest_name = if extract_here {
-                dest.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
-            } else {
-                dest.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
-            };
-            if !confirm_extract_overwrite(&dest_name) {
-                return; // user clicked No — abort
-            }
-        }
-        // Check if archive is encrypted — prompt for password if needed.
-        // If -p <password> was passed on CLI, use it directly (no GUI prompt).
-        let password = if let Some(ref pw) = cli_password {
-            Some(pw.clone())
-        } else if extract::is_encrypted(&archive) {
-            match prompt_password() {
-                Some(pw) => Some(pw),
-                None => return, // user cancelled password prompt
-            }
-        } else {
-            None
-        };
-        run_one(op_label, Some(op_detail), true, dest, OpKind::Extract(archive, password));
+        // Conflict check + password prompt now run INSIDE the worker thread (window-first).
+        // See the OpKind::Extract arm in run_one. V3 archives make the conflict check
+        // instant via the path index; the window appears the moment the user double-clicks.
+        let password = cli_password.clone();
+        run_one(op_label, Some(op_detail), true, dest, OpKind::Extract(archive, password, elevated_rerun));
         return;
     }
 
@@ -776,7 +752,7 @@ enum OpKind {
     CompressMany(Vec<PathBuf>),
     CompressSplit(PathBuf, u32), // (folder, segment_size_mb)
     CompressSplitMany(Vec<PathBuf>, u32), // (inputs, segment_size_mb)
-    Extract(PathBuf, Option<String>), // (archive, optional password)
+    Extract(PathBuf, Option<String>, bool), // (archive, optional password, skip_conflict_check=elevated_rerun)
 }
 
 fn run_one(op_label: String, op_detail: Option<String>, cancellable: bool, dest: PathBuf, op: OpKind) {
@@ -802,7 +778,44 @@ fn run_one(op_label: String, op_detail: Option<String>, cancellable: bool, dest:
         // silently killing the worker thread (which would leave the GUI hanging).
         let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let result = match op {
-            OpKind::Extract(a, pw) => extract::extract_archive_with_password(&a, &dest, &cancel_for_thread, pw.as_deref()),
+            OpKind::Extract(a, pw, skip_checks) => {
+                // WINDOW-FIRST: conflict check + password prompt run INSIDE the worker
+                // thread (after the window is already showing the animated sweep).
+                // Previously these ran BEFORE run_one — no window existed during the
+                // 10-14s conflict scan on a 6GB archive. Now the window appears instantly.
+                // V3 archives make the conflict check near-instant via the path index;
+                // v1/legacy still stream-scan but the user SEES the sweep while it runs.
+                if !skip_checks && extract::has_conflicts(&a, &dest) {
+                    let dest_name = dest.file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    if !confirm_extract_overwrite(&dest_name) {
+                        (true, String::new()) // user said No — clean exit, no error dialog
+                    } else {
+                        let pw_final = if let Some(ref p) = pw {
+                            Some(p.clone())
+                        } else if extract::is_encrypted(&a) {
+                            match prompt_password() {
+                                Some(p) => Some(p),
+                                None => return (true, String::new()), // cancelled prompt
+                            }
+                        } else {
+                            None
+                        };
+                        extract::extract_archive_with_password(&a, &dest, &cancel_for_thread, pw_final.as_deref())
+                    }
+                } else {
+                    let pw_final = if pw.is_none() && extract::is_encrypted(&a) {
+                        match prompt_password() {
+                            Some(p) => Some(p),
+                            None => return (true, String::new()), // cancelled prompt
+                        }
+                    } else {
+                        pw
+                    };
+                    extract::extract_archive_with_password(&a, &dest, &cancel_for_thread, pw_final.as_deref())
+                }
+            }
             OpKind::CompressOne(f) => {
                 let r = compress::compress_folder(&f, &dest, &[], &cancel_for_thread);
                 (r.0, if r.1.is_empty() { String::new() } else { r.1.join(", ") })
