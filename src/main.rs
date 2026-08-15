@@ -771,6 +771,38 @@ fn run_one(op_label: String, op_detail: Option<String>, cancellable: bool, dest:
 
     let cancel = Arc::new(AtomicBool::new(false));
 
+    let mut op = op; // mutable for pre-worker password fill-in
+
+    // not in the worker — Slint dialogs (PasswordWindow) and rfd dialogs cannot run
+    // from a non-main thread (deadlocks: nested event loop from worker thread).
+    // The progress window is ALREADY VISIBLE (animated sweep) during these checks,
+    // so the user sees instant feedback while v1 conflict scans run.
+    if let OpKind::Extract(ref a, ref pw, skip_checks) = op {
+        if !skip_checks {
+            // Conflict check (v3 archives: instant via path index; v1: stream scan)
+            if extract::has_conflicts(a, &dest) {
+                let dest_name = dest.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                if !confirm_extract_overwrite(&dest_name) {
+                    return; // user clicked No — close window, abort
+                }
+            }
+        }
+        // Password prompt (if no -p flag and the archive is encrypted)
+        if pw.is_none() && extract::is_encrypted(a) {
+            match prompt_password() {
+                Some(p) => {
+                    // Replace the op with the password filled in
+                    if let OpKind::Extract(a, _, sc) = op {
+                        op = OpKind::Extract(a, Some(p), sc);
+                    }
+                }
+                None => return, // user cancelled the password prompt
+            }
+        }
+    }
+
     // Run the operation in a background thread; the timer reads the heartbeat file.
     let cancel_for_thread = cancel.clone();
     let op_handle = std::thread::spawn(move || {
@@ -778,43 +810,11 @@ fn run_one(op_label: String, op_detail: Option<String>, cancellable: bool, dest:
         // silently killing the worker thread (which would leave the GUI hanging).
         let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let result = match op {
-            OpKind::Extract(a, pw, skip_checks) => {
-                // WINDOW-FIRST: conflict check + password prompt run INSIDE the worker
-                // thread (after the window is already showing the animated sweep).
-                // Previously these ran BEFORE run_one — no window existed during the
-                // 10-14s conflict scan on a 6GB archive. Now the window appears instantly.
-                // V3 archives make the conflict check near-instant via the path index;
-                // v1/legacy still stream-scan but the user SEES the sweep while it runs.
-                if !skip_checks && extract::has_conflicts(&a, &dest) {
-                    let dest_name = dest.file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_default();
-                    if !confirm_extract_overwrite(&dest_name) {
-                        (true, String::new()) // user said No — clean exit, no error dialog
-                    } else {
-                        let pw_final = if let Some(ref p) = pw {
-                            Some(p.clone())
-                        } else if extract::is_encrypted(&a) {
-                            match prompt_password() {
-                                Some(p) => Some(p),
-                                None => return (true, String::new()), // cancelled prompt
-                            }
-                        } else {
-                            None
-                        };
-                        extract::extract_archive_with_password(&a, &dest, &cancel_for_thread, pw_final.as_deref())
-                    }
-                } else {
-                    let pw_final = if pw.is_none() && extract::is_encrypted(&a) {
-                        match prompt_password() {
-                            Some(p) => Some(p),
-                            None => return (true, String::new()), // cancelled prompt
-                        }
-                    } else {
-                        pw
-                    };
-                    extract::extract_archive_with_password(&a, &dest, &cancel_for_thread, pw_final.as_deref())
-                }
+            OpKind::Extract(a, pw, _skip_checks) => {
+                // Pre-worker checks (conflict + password) already ran on the main thread
+                // in run_one before this worker spawned. pw carries the CLI -p flag or
+                // the prompted password. Just extract.
+                extract::extract_archive_with_password(&a, &dest, &cancel_for_thread, pw.as_deref())
             }
             OpKind::CompressOne(f) => {
                 let r = compress::compress_folder(&f, &dest, &[], &cancel_for_thread);
