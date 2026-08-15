@@ -338,6 +338,35 @@ fn read_whole(path: &Path, size: u64) -> std::io::Result<Vec<u8>> {
     Ok(buf)
 }
 
+/// Serialize the file-path index (null-separated UTF-8 paths, zstd-compressed).
+/// Used by v3 archives so the extractor can list files WITHOUT decompressing the
+/// whole tar stream — conflict checks become instant even on 50GB archives.
+/// NOTE: version byte is 0x03 (0x02 is reserved for the SPLIT format in segment.rs).
+pub fn build_path_index(files: &[FileEnt]) -> std::io::Result<Vec<u8>> {
+    // Pre-size: sum of path lengths + separators
+    let mut raw = Vec::with_capacity(files.iter().map(|f| f.rel.as_os_str().len() + 1).sum());
+    for f in files {
+        let p = f.rel.to_string_lossy().replace('\\', "/");
+        raw.extend_from_slice(p.as_bytes());
+        raw.push(0); // null separator (Windows filenames can't contain NUL)
+    }
+    // Compress the blob — a 100k-file listing compresses to ~1-2MB.
+    // Errors propagate (an empty index would silently skip conflict checks).
+    zstd::stream::encode_all(raw.as_slice(), 3)
+}
+
+/// Write the v3 LRGEX header: magic + version 0x03 + total(8) + index_len(8) + index blob.
+/// After this, the caller writes the zstd(tar) stream — the extractor seeks past the index.
+/// 0x02 is reserved for the SPLIT format (segment.rs); 0x01 is legacy v1 (no index).
+fn write_v3_header(writer: &mut impl std::io::Write, total_bytes: u64, files: &[FileEnt]) -> std::io::Result<()> {
+    let index = build_path_index(files)?;
+    writer.write_all(b"LRGEX\x03")?;
+    writer.write_all(&total_bytes.to_le_bytes())?;
+    writer.write_all(&(index.len() as u64).to_le_bytes())?;
+    writer.write_all(&index)?;
+    Ok(())
+}
+
 /// Compress a source directory (or single file) to a .tar.zst (branded .zgx). Writes to
 /// `<dest>.part` and atomically renames to `<dest>` only on full success.
 pub fn compress_folder(
@@ -387,12 +416,16 @@ pub fn compress_folder(
     };
     let writer = file;
 
-    // Write the 6-byte LRGEX magic header ("LRGEX" + version 0x01), then the 8-byte
-    // uncompressed total, then the zstd stream. Legacy archives (pre-magic) have no
-    // magic — the extractor detects them by zstd magic at byte 8.
+    // Write the v3 LRGEX header (magic + 0x03 + total + path index), then the zstd
+    // stream below. Legacy v1 archives (pre-index) have no magic version 0x03 — the
+    // extractor detects them by the version byte and falls back to stream scan.
     let mut header_writer = writer;
-    let _ = header_writer.write_all(b"LRGEX\x01");
-    let _ = header_writer.write_all(&total_bytes.to_le_bytes());
+    if write_v3_header(&mut header_writer, total_bytes, &files).is_err() {
+        progress.finish(4);
+        let _ = heartbeat.join();
+        let _ = std::fs::remove_file(&part);
+        return (false, vec![]);
+    }
 
     // Run the ONE engine (compress_into). The old inline engine code is replaced.
     let (ok, skipped) = compress_into(&files, header_writer, cancel, &progress);
@@ -617,11 +650,14 @@ pub fn compress_paths(
     };
     let writer = file;
 
-    // Write the 6-byte LRGEX magic header + 8-byte uncompressed total before the zstd stream.
-    use std::io::Write;
+    // Write the v3 LRGEX header (magic + total + index). Same as compress_folder.
     let mut header_writer = writer;
-    let _ = header_writer.write_all(b"LRGEX\x01");
-    let _ = header_writer.write_all(&total_bytes.to_le_bytes());
+    if write_v3_header(&mut header_writer, total_bytes, &files).is_err() {
+        progress.finish(4);
+        let _ = heartbeat.join();
+        let _ = std::fs::remove_file(&part);
+        return (false, vec![]);
+    }
 
     // Run the ONE engine (compress_into). Replaces the old inline encoder loop.
     let (ok, skipped) = compress_into(&files, header_writer, cancel, &progress);
@@ -641,6 +677,55 @@ pub fn compress_paths(
     progress.finish(phase);
     let _ = heartbeat.join();
     (success, skipped)
+}
+
+/// Read a .zgx header and return the byte offset where the zstd tar stream starts.
+/// Handles all formats: v3 (0x03 with index), v1 (0x01 legacy), and bare zstd.
+/// Shared by compress tests AND the extractor — single source of truth for offset math.
+pub fn zgx_stream_start(file: &mut std::fs::File) -> std::io::Result<u64> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut head = [0u8; 22];
+    let n = file.read(&mut head)?;
+    if n >= 6 && &head[0..5] == b"LRGEX" {
+        match head[5] {
+            0x03 => {
+                if n < 22 { return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "truncated v3 header")); }
+                let index_len = u64::from_le_bytes([head[14], head[15], head[16], head[17], head[18], head[19], head[20], head[21]]);
+                Ok(22 + index_len)
+            }
+            0x01 => Ok(14),
+            0x02 => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "split archive - use split extractor")),
+            v => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("unsupported version 0x{:02x}", v))),
+        }
+    } else if n >= 12 && head[8..12] == [0x28, 0xb5, 0x2f, 0xfd] {
+        Ok(8) // legacy with 8-byte size header
+    } else if n >= 4 && head[0..4] == [0x28, 0xb5, 0x2f, 0xfd] {
+        Ok(0) // bare zstd
+    } else {
+        Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "not a LRGEX/zstd archive"))
+    }
+}
+
+/// Read the v3 path index from a .zgx file (instant — no tar decompression needed).
+/// Returns None for v1/legacy archives (no index — caller falls back to stream scan).
+pub fn read_path_index(file: &mut std::fs::File) -> std::io::Result<Option<Vec<String>>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut head = [0u8; 22];
+    file.seek(SeekFrom::Start(0))?;
+    let n = file.read(&mut head)?;
+    if n >= 6 && &head[0..5] == b"LRGEX" && head[5] == 0x03 && n >= 22 {
+        let index_len = u64::from_le_bytes([head[14], head[15], head[16], head[17], head[18], head[19], head[20], head[21]]) as usize;
+        let mut index_blob = vec![0u8; index_len];
+        file.read_exact(&mut index_blob)?;
+        let raw = zstd::stream::decode_all(index_blob.as_slice())?;
+        let paths: Vec<String> = raw.split(|&b| b == 0)
+            .filter(|s| !s.is_empty())
+            .map(|s| String::from_utf8_lossy(s).to_string())
+            .collect();
+        Ok(Some(paths))
+    } else {
+        Ok(None) // v1 or legacy — no index
+    }
 }
 
 #[cfg(test)]
@@ -663,13 +748,14 @@ mod tests {
         assert!(ok, "compress failed");
         assert!(skipped.is_empty(), "files skipped: {:?}", skipped);
 
-        // 1) The empty dir MUST be an entry in the archive. Skip the 6-byte LRGEX magic
-        //    + 8-byte uncompressed-total header (14 bytes total) before the zstd stream.
+        // 1) The empty dir MUST be an entry in the archive. Use zgx_stream_start to
+        //    skip the v3 header (22 bytes + index_len) before the zstd stream.
         let f = std::fs::File::open(&archive).unwrap();
         let mut buf = std::io::BufReader::new(f);
-        let mut header = [0u8; 14];
-        use std::io::Read;
-        let _ = buf.read_exact(&mut header); // consume the 14-byte header
+        let mut file_for_offset = std::fs::File::open(&archive).unwrap();
+        let stream_start = zgx_stream_start(&mut file_for_offset).unwrap();
+        use std::io::{Read, Seek, SeekFrom};
+        buf.get_ref().seek(SeekFrom::Start(stream_start)).unwrap();
         let dec = zstd::Decoder::new(buf).unwrap();
         let mut tar = tar::Archive::new(dec);
         let names: Vec<String> = tar
@@ -683,14 +769,25 @@ mod tests {
         let out = tmp.join("extracted");
         std::fs::create_dir_all(&out).unwrap();
         let f2 = std::fs::File::open(&archive).unwrap();
+        let mut file_for_offset2 = std::fs::File::open(&archive).unwrap();
+        let stream_start2 = zgx_stream_start(&mut file_for_offset2).unwrap();
         let mut buf2 = std::io::BufReader::new(f2);
-        let mut header2 = [0u8; 14];
-        let _ = buf2.read_exact(&mut header2);
+        buf2.get_ref().seek(SeekFrom::Start(stream_start2)).unwrap();
         let dec2 = zstd::Decoder::new(buf2).unwrap();
         tar::Archive::new(dec2).unpack(&out).unwrap();
         let empty_sub = out.join("empty_sub");
         assert!(empty_sub.is_dir(), "empty_sub not recreated on extract");
         assert!(std::fs::read_dir(&empty_sub).unwrap().next().is_none(), "empty_sub not empty");
+
+        // 3) The v3 path index MUST round-trip: read_path_index returns the file listing.
+        let mut f3 = std::fs::File::open(&archive).unwrap();
+        let index = read_path_index(&mut f3).unwrap();
+        assert!(index.is_some(), "v3 archive has no path index");
+        let paths = index.unwrap();
+        assert!(paths.iter().any(|p| p == "has/a.txt"), "index missing has/a.txt: {:?}", paths);
+        assert!(paths.iter().any(|p| p == "empty_sub"), "index missing empty_sub: {:?}", paths);
+        // The sidecar (.lrgex/meta.bin) is NOT in the index — it's metadata, not a file.
+        assert!(!paths.iter().any(|p| p.contains("meta.bin")), "sidecar leaked into index: {:?}", paths);
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
