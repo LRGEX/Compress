@@ -228,7 +228,21 @@ lrgex-compress --help                           # show usage
 A `.zgx` file is a `tar.zst` archive (tar stream compressed with zstd) with a small
 LRGEX header for identification.
 
-**New format (v1.4.1+):**
+**Current format (v3):**
+```
+bytes 0-4        : ASCII "LRGEX" (magic header)
+byte  5          : format version (0x03)
+bytes 6-13       : uncompressed total size (u64 little-endian, for progress accuracy)
+bytes 14-21      : path index length (u64 little-endian)
+bytes 22..22+len : zstd-compressed path index (file listing — enables instant
+                   conflict detection without decompressing the archive)
+bytes 22+len+    : zstd-compressed tar stream
+```
+
+The path index lets the extractor list archive contents instantly, even on multi-GB
+archives. This is why the extract window appears immediately with overwrite detection.
+
+**v1 format:**
 ```
 bytes 0-4    : ASCII "LRGEX" (magic header)
 byte  5      : format version (0x01)
@@ -236,14 +250,16 @@ bytes 6-13   : uncompressed total size (u64 little-endian, for progress accuracy
 bytes 14+    : zstd-compressed tar stream
 ```
 
+**Version 0x02** is reserved for split archives (`.partNNN.zgx`).
+
 **Legacy format (pre-v1.4.1):**
 ```
 bytes 0-7    : uncompressed total size (u64 little-endian)
 bytes 8+     : zstd-compressed tar stream
 ```
 
-The extractor detects both formats automatically. Legacy archives continue to extract
-without any conversion.
+The extractor detects all formats automatically. Legacy and v1 archives continue to
+extract without any conversion.
 
 ---
 
