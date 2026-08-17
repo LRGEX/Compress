@@ -1,4 +1,17 @@
-# Patch Notes - Version 1.7.2 - Current
+# Patch Notes - Version 1.7.3 - Current
+
+## 🔒 Security & Bug Fixes
+
+- **Crash-log password leak fixed**: if the tool crashed while running with `-p <password>`, the
+  password was written to `crash-log.txt` in plaintext. Now redacted before writing.
+- **Encrypted multi-volume 7z fixed**: the password was silently dropped for `.7z.001` archives —
+  extraction failed even with the correct password. Now passed through.
+- **RAR symlink validation added**: crafted RAR archives could create symlinks pointing outside
+  the extraction folder. Now validated with the same target-containment check as zgx/zip/7z.
+
+---
+
+# Patch Notes - Version 1.7.2
 
 ## 🔧 Fixes
 
