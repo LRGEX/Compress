@@ -31,3 +31,4 @@ wiki/
 
 # Fresh-agent handoff doc (local agent context, not shared)
 FRESH-AGENT-HANDOFF.md
+benchmark/
