@@ -380,7 +380,7 @@ pub fn extract_archive_with_password(archive: &Path, dest: &Path, cancel: &Atomi
     // Multi-volume 7z detection by filename pattern (.7z.NNN) — before magic-byte
     // detect, because only .7z.001 has the signature and extension() returns "NNN".
     if is_sevenz_volume_part(archive) {
-        return extract_7z_with_password(archive, dest, cancel, None);
+        return extract_7z_with_password(archive, dest, cancel, password);
     }
     match detect_format(archive) {
         Some(Format::Zgx) => extract_zgx(archive, dest, cancel),
@@ -1723,6 +1723,11 @@ fn extract_rar_impl(archive: &Path, dest: &Path, cancel: &AtomicBool, password: 
             // Symlink handling (NEW - not in the old vendored-unrar path)
             if member.is_symlink {
                 if let Some(target) = &member.link_target {
+                    // Security: validate target — reject paths escaping the staging dir
+                    // (same guard as zgx/zip/7z — prevents crafted RAR symlink attacks)
+                    if !is_safe_link_target(target, &out_path, &staging) {
+                        continue; // unsafe target — skip
+                    }
                     if let Some(parent) = out_path.parent() { std::fs::create_dir_all(parent).ok(); }
                     let _ = std::fs::remove_file(&out_path).or_else(|_| std::fs::remove_dir(&out_path));
                     match crate::metaattr::create_symlink(&out_path, target, false) {

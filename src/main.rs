@@ -454,13 +454,22 @@ fn install_crash_handler() {
         // dbghelp resolves symbols via the PDB (must be next to the exe).
         let bt = backtrace::Backtrace::new();
         let access_name = if access_type == 0 { "read" } else if access_type == 1 { "write" } else { "exec" };
-        let log = format!(
+        let mut args_log = std::env::args().collect::<Vec<_>>();
+            // Sanitize: redact the argument after -p (password must never hit disk).
+            for i in 0..args_log.len() {
+                if args_log[i] == "-p" && i + 1 < args_log.len() {
+                    args_log[i + 1] = "[REDACTED]".to_string();
+                } else if args_log[i].starts_with("-p=") {
+                    args_log[i] = "-p=[REDACTED]".to_string();
+                }
+            }
+            let log = format!(
             "LRGEX Compress CRASH\nTime(epoch): {}\nException: 0x{:08X} {}\nFault RVA: 0x{:X}\nFault addr: 0x{:016X}\nAccess: {} address 0x{:016X}\nThread: {}\nExe: {}\nVersion: {}\nArgs: {:?}\n\n=== BACKTRACE ===\n{:?}\n",
             timestamp, code as u32,
             if code == EXCEPTION_ACCESS_VIOLATION { "ACCESS_VIOLATION" } else { "OTHER" },
             rva, fault_addr, access_name, bad_addr,
             tid, exe, env!("CARGO_PKG_VERSION"),
-            std::env::args().collect::<Vec<_>>(), bt,
+            args_log, bt,
         );
         if let Ok(local) = std::env::var("LOCALAPPDATA") {
             let dir = std::path::PathBuf::from(local).join("LRGEX Compress");
