@@ -98,9 +98,9 @@ Extracts ZIP, RAR, 7z, and ZGX archives. You don't need WinRAR or 7-Zip installe
 
 ## Benchmark
 
-Independent comparison against 7-Zip, WinRAR, and Windows ZIP — fastest legitimate compression preset for each competitor, zero configuration for LRGEX.
+Reproducible compression benchmark: LRGEX Compress vs 7-Zip, WinRAR, and Windows ZIP. Fastest legitimate compression preset for each competitor; zero configuration for LRGEX.
 
-**5 datasets · 4 compressors · 100 runs · 0 integrity failures**
+**5 datasets · 4 compressors · 5 runs each · 100 total runs · 0 integrity failures**
 
 ### Compression speed (median, MB/s)
 
@@ -115,6 +115,10 @@ Independent comparison against 7-Zip, WinRAR, and Windows ZIP — fastest legiti
 ### Overall: LRGEX **235.6 MB/s** · 7-Zip **138 MB/s** · WinRAR **78.9 MB/s** · Windows ZIP **32.6 MB/s**
 
 **LRGEX is 1.7× faster than 7-Zip overall** — fastest in 3 of 5 real-world categories.
+
+These results measure **compression throughput**, not compression ratio or extraction performance; no single metric represents every use case.
+
+Compression ratio = original dataset size ÷ archive size. Higher is better.
 
 ### Where LRGEX loses (honest results)
 - **7-Zip wins** on highly compressible data (275 vs 100 MB/s) and many-small-files (38 vs 19 MB/s)
