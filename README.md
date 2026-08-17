@@ -112,7 +112,9 @@ Reproducible compression benchmark: LRGEX Compress vs 7-Zip, WinRAR, and Windows
 | Highly compressible (270 MB) | 100 | **275** | 133 | 68 |
 | Many small files (10K) | 19 | **38** | 7 | 0.4 |
 
-### Overall: LRGEX **235.6 MB/s** · 7-Zip **138 MB/s** · WinRAR **78.9 MB/s** · Windows ZIP **32.6 MB/s**
+### Overall: LRGEX **235.6 MB/s** · 7-Zip **138.0 MB/s** · WinRAR **78.9 MB/s** · Windows ZIP **32.6 MB/s**
+
+Overall throughput is the mean of all 25 runs per application, calculated from the underlying benchmark results rather than the rounded dataset medians shown above.
 
 **LRGEX is 1.7× faster than 7-Zip overall** — fastest in 3 of 5 real-world categories.
 
@@ -123,7 +125,7 @@ Compression ratio = original dataset size ÷ archive size. Higher is better.
 ### Where LRGEX loses (honest results)
 - **7-Zip wins** on highly compressible data (275 vs 100 MB/s) and many-small-files (38 vs 19 MB/s)
 - **7-Zip extracts faster** (1.6×–6.9× depending on dataset)
-- **WinRAR compresses denser** on mixed content (ratio 1.163 vs 1.005) — at ~3.5× slower speed
+- **WinRAR achieves a better compression ratio** on mixed content (1.163 vs 1.005), but takes ~3.5× longer to compress
 
 <details>
 <summary>Full methodology + per-dataset tables</summary>
@@ -131,7 +133,7 @@ Compression ratio = original dataset size ÷ archive size. Higher is better.
 - Each application/dataset combination ran **5 times**; **median** published
 - All apps used their **fastest legitimate compression preset** — no Store/copy mode
 - LRGEX: zero configuration (as shipped) · 7-Zip: `-mx=1` · WinRAR: `-m1 -r` · Windows ZIP: `Compress-Archive Fastest`
-- Integrity verified: file count + size match on extraction, 100/100 PASS
+- Integrity verified: file count + file size matched on extraction, 100/100 PASS
 
 **Benchmark performed on Windows** using LRGEX Compress, 7-Zip, WinRAR and Windows ZIP. Five runs per configuration; median results shown. No store/no-compression mode. All archives were extracted and verified.
 
