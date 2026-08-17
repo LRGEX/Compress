@@ -1,0 +1,14 @@
+﻿{
+    "cpu_threads":  24,
+    "windows_version":  "Microsoft Windows 11 Pro",
+    "filesystem":  "NTFS",
+    "cpu":  "AMD Ryzen 9 3900X 12-Core Processor",
+    "free_space_gb":  82.6,
+    "benchmark_version":  "1.0.0",
+    "windows_build":  "26200",
+    "dest_drive":  "E: (NVMe)",
+    "source_drive":  "E: (NVMe)",
+    "ram_gb":  31.9,
+    "cpu_cores":  12,
+    "timestamp":  "2026-08-17T03:25:07"
+}
