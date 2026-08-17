@@ -124,7 +124,7 @@ Compression ratio = original dataset size ÷ archive size. Higher is better.
 
 ### Where LRGEX loses (honest results)
 - **7-Zip wins** on highly compressible data (275 vs 100 MB/s) and many-small-files (38 vs 19 MB/s)
-- **7-Zip extracts faster** (1.6×–6.9× depending on dataset)
+- **7-Zip extracts faster** (1.6×–6.9× depending on dataset) — but LRGEX extraction is slower by design: every file is written to a temporary name first, then atomically renamed to its final name only after the write completes. A failed write (disk full, I/O error, cancel mid-file) **never destroys the user's existing file**. That temp-then-rename guarantee is what you're paying for in that gap.
 - **WinRAR achieves a better compression ratio** on mixed content (1.163 vs 1.005), but takes ~3.5× longer to compress
 
 <details>
