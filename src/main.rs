@@ -860,13 +860,22 @@ fn run_one(op_label: String, op_detail: Option<String>, cancellable: bool, dest:
         // hanging forever.
         if !result.0 {
             // Check if the status file already has a terminal phase (3 or 4).
-            let already_terminal = progress::read_status()
-                .map(|s| s.phase >= 3)
-                .unwrap_or(false);
+            let status = progress::read_status();
+            let already_terminal = status.as_ref().map(|s| s.phase >= 3).unwrap_or(false);
             if !already_terminal {
                 progress::clear_status();
                 let prog = progress::Progress::new("");
                 prog.fail(&result.1); // set error message + finish(4)
+            } else if status.as_ref().map(|s| s.phase == 4 && s.error_msg.is_empty()).unwrap_or(false)
+                && !result.1.is_empty()
+            {
+                // The worker wrote the error phase but dropped the message (e.g. a
+                // finish(4) without set_error in an extract/compress impl). Backfill it
+                // so the UI never shows a reason-less "Failed". Guarded on phase==4:
+                // never touches success (3) or cancel (5).
+                let prog = progress::Progress::new("");
+                prog.set_error(&result.1);
+                prog.finish(4);
             }
         }
     });

@@ -63,10 +63,29 @@ pub fn run(args: &[&str], timeout: Duration) -> i32 {
     cmd.stdout(std::process::Stdio::null());
     cmd.stderr(std::process::Stdio::null());
     let mut child = cmd.spawn().unwrap_or_else(|e| panic!("failed to spawn exe: {e}"));
+    let pid = child.id();
+    // Defensive: clear any STALE status file for this pid (Windows recycles pids
+    // aggressively — a leftover phase-4 file would make run() return -2 immediately).
+    let status_path = std::env::temp_dir().join(format!("lrgex-compress-status-{}.json", pid));
+    let _ = std::fs::remove_file(&status_path);
     loop {
         match child.try_wait() {
             Ok(Some(status)) => return status.code().unwrap_or(-1),
             Ok(None) => {
+                // The GUI never exits on failure (the Failed dialog intentionally stays
+                // open for the user). For tests, watch the on-disk status JSON: once an
+                // ERROR/CANCEL terminal phase (4/5) is written for this pid, the operation
+                // is over — kill the windowed process and report a synthetic non-zero
+                // code. Success (phase 3) is left alone: it auto-closes and exits 0,
+                // which callers assert on.
+                if failed_phase_for_pid(pid) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    // Clean up the status file so a later pid reuse never sees a stale
+                    // phase-4 snapshot.
+                    let _ = std::fs::remove_file(&status_path);
+                    return -2; // terminated via terminal failure status (see tests/error_reporting.rs)
+                }
                 if start.elapsed() > timeout {
                     let _ = child.kill();
                     panic!("exe timed out after {:?}", timeout);
@@ -76,6 +95,14 @@ pub fn run(args: &[&str], timeout: Duration) -> i32 {
             Err(e) => panic!("wait failed: {e}"),
         }
     }
+}
+
+/// True when %TEMP%/lrgex-compress-status-<pid>.json for this pid shows a FAILURE
+/// terminal phase (4=error or 5=cancel). Success (3) intentionally excluded — see run().
+fn failed_phase_for_pid(pid: u32) -> bool {
+    let path = std::env::temp_dir().join(format!("lrgex-compress-status-{}.json", pid));
+    let content = match std::fs::read_to_string(&path) { Ok(c) => c, Err(_) => return false };
+    content.contains("\"phase\":4") || content.contains("\"phase\":5")
 }
 
 pub fn exe_lock() -> std::sync::MutexGuard<'static, ()> {

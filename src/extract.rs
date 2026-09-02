@@ -1817,6 +1817,13 @@ fn extract_rar_impl(archive: &Path, dest: &Path, cancel: &AtomicBool, password: 
     })();
 
     let cancelled = result.is_err() && cancel.load(Ordering::Relaxed);
+    // Defense in depth: persist the failure reason the moment the terminal phase is
+    // written — never a reason-less "Failed" (see doc/fix-later-error-reporting.md).
+    if let Err(e) = &result {
+        if !cancelled {
+            prog.set_error(e);
+        }
+    }
     prog.finish(if cancelled { 5 } else if result.is_ok() { 3 } else { 4 });
     let _ = heartbeat.join();
     match result {
@@ -2162,6 +2169,12 @@ fn extract_7z_multi(parts: &[PathBuf], dest: &Path, cancel: &AtomicBool, label: 
     let _ = std::fs::remove_file(&tmp_file);
 
     let cancelled = result.is_err() && cancel.load(Ordering::Relaxed);
+    // Defense in depth: persist the failure reason (see extract_rar_impl note).
+    if let Err(e) = &result {
+        if !cancelled {
+            prog.set_error(e);
+        }
+    }
     if cancelled {
         prog.finish(5);
     } else {
@@ -2248,7 +2261,12 @@ fn extract_7z_single(archive: &Path, dest: &Path, cancel: &AtomicBool, label: St
 
     let result = result.map_err(|e| e.to_string());
     let cancelled = result.is_err() && cancel.load(Ordering::Relaxed);
-
+    // Defense in depth: persist the failure reason (see extract_rar_impl note).
+    if let Err(e) = &result {
+        if !cancelled {
+            prog.set_error(e);
+        }
+    }
     if cancelled {
         prog.finish(5);
     } else {
