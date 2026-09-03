@@ -170,6 +170,9 @@ slint::slint! {
                 color: root.result-color;
                 font-size: 14px;
                 horizontal-alignment: center;
+                wrap: word-wrap;
+                horizontal-stretch: 1;
+                overflow: elide;
             }
             if root.done : Button {
                 text: "Close";
@@ -955,19 +958,28 @@ fn run_one(op_label: String, op_detail: Option<String>, cancellable: bool, dest:
             if !app.get_done() {
                 if s.phase == 3 {
                     app.set_done(true);
-                    if s.skipped > 0 {
+                    if !s.error_msg.is_empty() {
+                        // PARTIAL success: some members failed (CRC etc.) but the rest
+                        // extracted. Amber, full failure list, NO auto-close — the user
+                        // must read which files are missing/corrupt.
+                        app.set_result(format!("Done - {} failed: {}",
+                            if s.failed > 0 { s.failed.to_string() } else { "N".to_string() }, s.error_msg).into());
+                        app.set_result_color(slint::Color::from_rgb_u8(0xcb, 0x80, 0x3c));
+                    } else if s.skipped > 0 {
                         app.set_result(format!("Done - {} skipped", s.skipped).into());
                         app.set_result_color(slint::Color::from_rgb_u8(0xcb, 0x80, 0x3c));
+                        auto_close.store(true, Ordering::Relaxed);
+                        close_timer.start(TimerMode::SingleShot, Duration::from_secs(2), move || {
+                            let _ = slint::quit_event_loop();
+                        });
                     } else {
                         app.set_result("Done".into());
                         app.set_result_color(slint::Color::from_rgb_u8(0x4c, 0xaf, 0x50));
+                        auto_close.store(true, Ordering::Relaxed);
+                        close_timer.start(TimerMode::SingleShot, Duration::from_secs(2), move || {
+                            let _ = slint::quit_event_loop();
+                        });
                     }
-                    // Start auto-close countdown (2s). The update check runs AFTER
-                    // app.run() returns, so closing the window doesn't skip it.
-                    auto_close.store(true, Ordering::Relaxed);
-                    close_timer.start(TimerMode::SingleShot, Duration::from_secs(2), move || {
-                        let _ = slint::quit_event_loop();
-                    });
                 } else if s.phase == 4 {
                     app.set_indeterminate(false);
                     app.set_done(true);

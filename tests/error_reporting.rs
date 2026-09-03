@@ -164,5 +164,110 @@ fn corrupt_rar_member_error_names_the_file() {
     eprintln!("PASS corrupt_rar_member: error names file, nothing leaked");
 }
 
+#[test]
+fn corrupt_rar_partial_extraction_keeps_good_files() {
+    // WinRAR-parity: ONE corrupt member must NOT kill the whole extraction.
+    // 2-member RAR, corrupt one → expect: phase 3 (partial), failed=1, error_msg
+    // names the corrupt member, the GOOD file extracted, the corrupt one absent.
+    let rar = std::path::Path::new(r"C:\Program Files\WinRAR\Rar.exe");
+    if !rar.exists() {
+        eprintln!("SKIP partial_rar: WinRAR Rar.exe not found — install WinRAR to run this test");
+        return;
+    }
+
+    let exe = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target/release/lrgex-compress.exe");
+    assert!(exe.exists(), "Release exe not built. Run `cargo build --release`.");
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+
+    let good_name = "good.bin";
+    let bad_name = "bad.bin";
+    let marker = b"__CORRUPT_ME_MARKER__";
+
+    let mut make = |seed: u64, with_marker: bool| -> Vec<u8> {
+        let mut v = vec![0u8; 256 * 1024];
+        let mut state = seed;
+        for b in v.iter_mut() {
+            state ^= state << 13; state ^= state >> 7; state ^= state << 17;
+            *b = state as u8;
+        }
+        if with_marker { v[100_000..100_000 + marker.len()].copy_from_slice(marker); }
+        v
+    };
+    let good = make(0x1111_2222_3333_4444, false);
+    let bad = make(0xAAAA_BBBB_CCCC_DDDD, true);
+    std::fs::write(src.join(good_name), &good).unwrap();
+    std::fs::write(src.join(bad_name), &bad).unwrap();
+
+    let archive = tmp.path().join("partial-corrupt.rar");
+    let out = std::process::Command::new(rar)
+        .args(["a", "-m0", "-ep",
+            &archive.to_string_lossy(),
+            &src.join(good_name).to_string_lossy(),
+            &src.join(bad_name).to_string_lossy()])
+        .output().expect("failed to run Rar.exe");
+    assert!(out.status.success(), "Rar.exe failed: {}", String::from_utf8_lossy(&out.stderr));
+
+    // Corrupt ONE member's stored data.
+    let mut raw = std::fs::read(&archive).unwrap();
+    let pos = raw.windows(marker.len()).position(|w| w == marker)
+        .expect("marker not found");
+    raw[pos + marker.len()] ^= 0xFF;
+    std::fs::write(&archive, &raw).unwrap();
+
+    let dest = archive.with_extension("");
+    let _ = std::fs::remove_dir_all(&dest);
+
+    let start = std::time::Instant::now();
+    let mut child = std::process::Command::new(&exe)
+        .args(["-x", &archive.to_string_lossy()])
+        .spawn().expect("spawn exe");
+    let status_path = std::env::temp_dir()
+        .join(format!("lrgex-compress-status-{}.json", child.id()));
+    let _ = std::fs::remove_file(&status_path);
+
+    // Terminal state: phase 3 (partial success — the good file extracted).
+    let status = loop {
+        if let Ok(content) = std::fs::read_to_string(&status_path) {
+            if content.contains("\"phase\":3") || content.contains("\"phase\":4") {
+                break content;
+            }
+        }
+        if start.elapsed() > Duration::from_secs(60) {
+            let _ = child.kill();
+            panic!("no terminal status within 60s");
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    };
+    // Partial state keeps the window open (no auto-close) — give it a moment to settle.
+    std::thread::sleep(Duration::from_millis(500));
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_file(&status_path);
+
+    eprintln!("status: {}", status);
+    assert!(status.contains("\"phase\":3"),
+        "expected PARTIAL success (phase 3), got: {}", status);
+    assert!(status.contains("\"failed\":1"), "expected failed=1, got: {}", status);
+    let err = status
+        .split("\"error_msg\":\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .unwrap_or("").to_string();
+    assert!(err.contains(bad_name), "error_msg must name the corrupt member: {}", err);
+    assert!(!err.contains(good_name), "error_msg must NOT name the good member: {}", err);
+
+    // The good file extracted byte-identical; the corrupt one is absent (not bad bytes).
+    let extracted_good = dest.join(good_name);
+    assert!(extracted_good.exists(), "good member not extracted — partial extraction broken");
+    assert_eq!(std::fs::read(&extracted_good).unwrap(), good, "good member content mismatch");
+    assert!(!dest.join(bad_name).exists(), "corrupt member must NOT be delivered");
+
+    eprintln!("PASS partial_rar: good extracted, corrupt skipped and named");
+}
+
 #[allow(dead_code)]
 fn _keep() { let _ = run_exe_blocking; }

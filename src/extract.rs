@@ -1437,15 +1437,32 @@ fn extract_zip_impl(archive: &Path, dest: &Path, cancel: &AtomicBool, password: 
         // Count symlinks silently lost (elevation declined). Does NOT count stub-written
         // links (those aren't lost). Surfaced via set_skipped before Ok(()).
         let mut skipped_links: usize = 0;
+        // Per-member failures (CRC etc.) — partial success, not fatal. See extract_rar_impl.
+        let mut member_failures: Vec<String> = Vec::new();
+        let mut zip_ok_files: u64 = 0;
         for i in 0..za.len() {
             if cancel.load(Ordering::Relaxed) {
                 return Err("__LRGEX_CANCEL__".to_string());
             }
             let mut entry = if let Some(pw) = password {
                 let opts = zip::read::ZipReadOptions::new().password(Some(pw.as_bytes()));
-                za.by_index_with_options(i, opts).map_err(|e| format!("entry {}: {}", i, e))?
+                match za.by_index_with_options(i, opts) {
+                    Ok(e) => e,
+                    Err(e) => {
+                        // Per-entry failure (bad header, wrong password on one entry):
+                        // record, skip, keep extracting the rest. Partial > total loss.
+                        member_failures.push(format!("entry {}: {}", i, e));
+                        continue;
+                    }
+                }
             } else {
-                za.by_index(i).map_err(|e| format!("entry {}: {}", i, e))?
+                match za.by_index(i) {
+                    Ok(e) => e,
+                    Err(e) => {
+                        member_failures.push(format!("entry {}: {}", i, e));
+                        continue;
+                    }
+                }
             };
             // zip-slip guard: enclosed_name() returns a sanitized path or None for unsafe
             // names (e.g. containing `..` or absolute paths). Skip those entirely.
@@ -1530,7 +1547,9 @@ fn extract_zip_impl(archive: &Path, dest: &Path, cancel: &AtomicBool, password: 
                 drop(outf);
                 if let Err(e) = write_res {
                     let _ = std::fs::remove_file(&tmp);
-                    return Err(e);
+                    // Data-level failure (CRC mismatch etc.): record, skip, keep going.
+                    member_failures.push(format!("{}: {}", rel.display(), e));
+                    continue;
                 }
                 // Atomic swap: temp → final.
                 if let Err(e) = crate::metaattr::atomic_replace(&tmp, &outpath) {
@@ -1538,8 +1557,8 @@ fn extract_zip_impl(archive: &Path, dest: &Path, cancel: &AtomicBool, password: 
                     return Err(format!("rename {}: {}", rel.display(), e));
                 }
                 guard.disarm(); // rename succeeded
+                zip_ok_files += 1;
             }
-            // Restore mtime AFTER the write (Windows updates mtime on write).
             if let Some(mt) = mtime {
                 crate::metaattr::apply_times_path(&outpath, mt, 0);
             }
@@ -1572,6 +1591,15 @@ fn extract_zip_impl(archive: &Path, dest: &Path, cancel: &AtomicBool, password: 
         }
         // Surface skipped-links count BEFORE finish so the GUI shows 'Done - N skipped'.
         if skipped_links > 0 { prog.set_skipped(skipped_links); }
+        if !member_failures.is_empty() {
+            if zip_ok_files == 0 {
+                // EVERY file failed — total failure, not partial.
+                return Err(member_failures.join("; "));
+            }
+            prog.set_failed(member_failures.len() as u64);
+            prog.set_error(&format!("{} of {} file(s) failed: {}",
+                member_failures.len(), za.len(), member_failures.join("; ")));
+        }
         Ok(())
     })();
 
@@ -1709,6 +1737,12 @@ fn extract_rar_impl(archive: &Path, dest: &Path, cancel: &AtomicBool, password: 
         };
         let mut elevation_decision: Option<bool> = None;
         let mut skipped_links = 0u32;
+        // Per-member failures (e.g. CRC checksum error). NOT fatal — extract everything
+        // else, then report. WinRAR-parity: one corrupt file must not burn the job.
+        // Carried via set_error() + a dedicated failed counter; `skipped` stays reserved
+        // for elevation-declined symlinks.
+        let mut member_failures: Vec<String> = Vec::new();
+        let mut rar_ok_files: u64 = 0;
 
         for (idx, member) in members.iter().enumerate() {
             if cancel.load(Ordering::Relaxed) {
@@ -1780,6 +1814,7 @@ fn extract_rar_impl(archive: &Path, dest: &Path, cancel: &AtomicBool, password: 
 
             match rar.extract_member_streaming(idx, &opts, &provider, &mut writer) {
                 Ok(_) => {
+                    rar_ok_files += 1;
                     drop(writer);
                     if let Err(_) = crate::metaattr::atomic_replace(&tmp, &out_path) {
                         let _ = std::fs::remove_file(&tmp); continue;
@@ -1798,12 +1833,26 @@ fn extract_rar_impl(archive: &Path, dest: &Path, cancel: &AtomicBool, password: 
                         if let Some(g) = staging_guard.take() { drop(g); }
                         return Err("cancelled".to_string());
                     }
-                    return Err(format!("RAR extract {} failed: {e}", member.name));
+                    // Data-level failure (checksum mismatch etc.): record, skip the member,
+                    // keep extracting the rest. Partial > total loss.
+                    member_failures.push(format!("{}: {}", member.name, e));
                 }
             }
         }
 
         if skipped_links > 0 { prog.set_skipped(skipped_links as usize); }
+        if !member_failures.is_empty() {
+            if rar_ok_files == 0 {
+                // EVERY file failed — total failure, not partial.
+                return Err(member_failures.join("; "));
+            }
+            // Partial success: phase 3 (done) + failure list in error_msg. The UI shows
+            // an amber "Done - N failed" summary (no auto-close); corrupt bytes were
+            // never delivered (temp file removed above).
+            prog.set_failed(member_failures.len() as u64);
+            prog.set_error(&format!("{} of {} file(s) failed: {}",
+                member_failures.len(), members.len(), member_failures.join("; ")));
+        }
 
         // 5. Move staging into dest (same as old path)
         match move_dir_contents(&staging, dest) {

@@ -36,6 +36,7 @@ struct ProgressInner {
     bytes_done: AtomicU64,
     bytes_total: AtomicU64,
     skipped: AtomicUsize,      // files that could not be read (warn, don't fail)
+    failed: AtomicU64,         // extract: members that failed (CRC etc.) — partial success
     started: Instant,
     stop: AtomicBool,
     label: Mutex<String>,
@@ -53,6 +54,7 @@ impl Progress {
                 bytes_done: AtomicU64::new(0),
                 bytes_total: AtomicU64::new(0),
                 skipped: AtomicUsize::new(0),
+                failed: AtomicU64::new(0),
                 started: Instant::now(),
                 stop: AtomicBool::new(false),
                 label: Mutex::new(label.to_string()),
@@ -74,6 +76,12 @@ impl Progress {
     /// Number of files that could not be read/archived (shown as a warning, not a failure).
     pub fn set_skipped(&self, n: usize) {
         self.inner.skipped.store(n, Ordering::Relaxed);
+    }
+
+    /// Number of archive members that FAILED during extraction (e.g. CRC mismatch).
+    /// Partial success: the rest extracted; failure details go in error_msg.
+    pub fn set_failed(&self, n: u64) {
+        self.inner.failed.store(n, Ordering::Relaxed);
     }
 
     /// Set the error message (shown in the GUI when phase=4).
@@ -115,8 +123,9 @@ impl Progress {
         let label = self.inner.label.lock().map(|g| g.clone()).unwrap_or_default();
         let error_msg = self.inner.error_msg.lock().map(|g| g.clone()).unwrap_or_default();
         let skipped = self.inner.skipped.load(Ordering::Relaxed);
+        let failed = self.inner.failed.load(Ordering::Relaxed);
         format!(
-            "{{\"heartbeat\":{},\"pid\":{},\"phase\":{},\"label\":{},\"error_msg\":{},\"files_done\":{},\"files_total\":{},\"bytes_done\":{},\"bytes_total\":{},\"skipped\":{},\"elapsed\":{:.1},\"rate\":{:.1},\"eta\":{}}}",
+            "{{\"heartbeat\":{},\"pid\":{},\"phase\":{},\"label\":{},\"error_msg\":{},\"files_done\":{},\"files_total\":{},\"bytes_done\":{},\"bytes_total\":{},\"skipped\":{},\"failed\":{},\"elapsed\":{:.1},\"rate\":{:.1},\"eta\":{}}}",
             now_secs(),
             pid,
             self.inner.phase.load(Ordering::Relaxed),
@@ -127,6 +136,7 @@ impl Progress {
             bdone,
             btotal,
             skipped,
+            failed,
             elapsed,
             rate,
             eta
@@ -212,6 +222,8 @@ pub struct Status {
     pub bytes_total: u64,
     #[serde(default)]
     pub skipped: usize,
+    #[serde(default)]
+    pub failed: u64,
     pub elapsed: f64,
     pub rate: f64,
     pub eta: u64,
