@@ -1,0 +1,16 @@
+Windows Registry Editor Version 5.00
+
+; Adds "LRGEX -> View" to the right-click menu of .zgx files.
+; Created 2026-08-18 for the -v view/selective-extract feature.
+; Import: double-click this file, confirm the UAC prompt (writes to HKLM —
+; the install is machine-wide, so the menu must live where the installer
+; put the rest of the LRGEX.zgx keys).
+; NOTE: the installer (lrgex-compress.iss) now writes these keys itself —
+; after the next installer run, this manual import is redundant.
+
+[HKEY_LOCAL_MACHINE\Software\Classes\LRGEX.zgx\ContextMenus\LRGEX\shell\view]
+@="View"
+"Icon"="C:\\Program Files\\LRGEX Compress\\lrgex-compress.exe,0"
+
+[HKEY_LOCAL_MACHINE\Software\Classes\LRGEX.zgx\ContextMenus\LRGEX\shell\view\command]
+@="\"C:\\Program Files\\LRGEX Compress\\lrgex-compress.exe\" -v \"%1\""

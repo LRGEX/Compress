@@ -124,6 +124,12 @@ Root: HKA; Subkey: "Software\Classes\LRGEX.zgx\ContextMenus\LRGEX\shell\extractH
     ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName},0"
 Root: HKA; Subkey: "Software\Classes\LRGEX.zgx\ContextMenus\LRGEX\shell\extractHere\command"; \
     ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" -x -h ""%1"""
+Root: HKA; Subkey: "Software\Classes\LRGEX.zgx\ContextMenus\LRGEX\shell\view"; \
+    ValueType: string; ValueName: ""; ValueData: "View"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\LRGEX.zgx\ContextMenus\LRGEX\shell\view"; \
+    ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName},0"
+Root: HKA; Subkey: "Software\Classes\LRGEX.zgx\ContextMenus\LRGEX\shell\view\command"; \
+    ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" -v ""%1"""
 
 ; ===== .zip and .rar: cascade ONLY under SystemFileAssociations =====
 ; Do NOT take ownership of .zip/.rar — preserves Explorer's built-in zip handler and
