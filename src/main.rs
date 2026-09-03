@@ -285,19 +285,35 @@ slint::slint! {
                 wrap: word-wrap;
             }
             HorizontalBox {
-                CheckBox {
-                    text: "Select all";
-                    checked <=> root.all-checked;
-                    toggled => { root.toggle-all(); }
-                }
+                padding: 0;
+                // Header row — aligned with the table below (checkbox col + name col).
+                Rectangle { width: 30px; CheckBox { text: ""; checked <=> root.all-checked; toggled => { root.toggle-all(); } } }
+                Text { text: "Name"; color: #9e9e9e; font-size: 12px; vertical-alignment: center; }
             }
+            Rectangle { height: 1px; background: #3a3a3a; }
             ListView {
                 for e[i] in root.entries: Rectangle {
                     height: 26px;
+                    background: Math.mod(i, 2) == 1 ? #262626 : transparent;
+                    // Fixed checkbox column — every row's box sits at the SAME x,
+                    // regardless of filename length (user-reported alignment bug:
+                    // CheckBox text-width made the boxes stagger).
                     CheckBox {
-                        text: e.path;
+                        x: 6px; y: (parent.height - self.height) / 2;
+                        width: 20px;
+                        text: "";
                         checked: e.checked;
                         toggled => { e.checked = !e.checked; }
+                    }
+                    // Name column: fixed offset, left-aligned, ellipsized overflow.
+                    Text {
+                        x: 34px;
+                        width: parent.width - 42px;
+                        vertical-alignment: center;
+                        text: e.path;
+                        color: #e0e0e0;
+                        font-size: 13px;
+                        overflow: elide;
                     }
                 }
             }

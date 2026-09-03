@@ -14,8 +14,9 @@ fn zgx_selective_extract_writes_only_selected() {
     let tmp = tempfile::TempDir::new().unwrap();
     let src = tmp.path().join("src");
     std::fs::create_dir_all(src.join("sub")).unwrap();
+    std::fs::create_dir_all(src.join("other")).unwrap();
 
-    let files = ["a.bin", "sub/b.bin", "c.bin"];
+    let files = ["a.bin", "sub/b.bin", "c.bin", "other/d.bin"];
     let mut contents = std::collections::HashMap::new();
     for (i, f) in files.iter().enumerate() {
         let data: Vec<u8> = (0..4096).map(|j| (i * 7 + j) as u8).collect();
@@ -81,6 +82,25 @@ fn zgx_selective_extract_writes_only_selected() {
     assert_eq!(std::fs::read(&sel).unwrap(), contents["sub/b.bin"], "selected content mismatch");
     assert!(!dest.join("a.bin").exists(), "non-selected a.bin must NOT be written");
     assert!(!dest.join("c.bin").exists(), "non-selected c.bin must NOT be written");
+    // No empty folder skeleton: only the selected file's ancestor chain may exist.
+    // a.bin and c.bin are at the ROOT, so selecting sub/b.bin must create exactly
+    // ONE dir (sub). More dirs = empty skeleton regression.
+    let dir_count = {
+        let mut n = 0;
+        let mut stack = vec![dest.clone()];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).unwrap().flatten() {
+                if e.path().is_dir() { n += 1; stack.push(e.path()); }
+            }
+        }
+        n
+    };
+    // a.bin, c.bin at ROOT; other/ is OFF the selected chain — selecting sub/b.bin
+    // must create exactly ONE dir (sub). dir_count==2 = empty-skeleton regression
+    // (other/ was rebuilt) — this assertion only bites BECAUSE other/d.bin is
+    // unselected and off-chain.
+    assert_eq!(dir_count, 1, "expected exactly 1 dir (sub/), found {dir_count} — empty folder skeleton is back");
+    assert!(!dest.join("other").exists(), "off-chain dir 'other/' must NOT be created");
 
     // 3. Full extract still works after selective (nothing consumed).
     let _ = std::fs::remove_dir_all(&dest);

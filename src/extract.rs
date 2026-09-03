@@ -1002,7 +1002,14 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path, c
         };
         let meta = EntryMeta { mtime, ctime, attrs };
 
+        // Selective mode: skip dir ENTRIES entirely — the selected files' parent
+        // mkdirs (batch flush + stream path) materialize exactly their ancestor
+        // chains. Creating dir entries unconditionally would rebuild the whole
+        // empty folder skeleton of the original archive (user-reported bug).
         if etype.is_dir() {
+            if wanted.is_some() {
+                continue;
+            }
             if dir_cache.insert(outpath.clone()) {
                 if let Err(e) = std::fs::create_dir_all(&outpath) {
                     return (ZgxOutcome::Failed(format!("mkdir: {}", e)), dir_meta_todo);
