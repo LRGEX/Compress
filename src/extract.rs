@@ -283,6 +283,24 @@ fn detect_format(path: &Path) -> Option<Format> {
     }
 }
 
+/// Instantly list a v3 .zgx's contents (paths only) from the path index —
+/// zero decompression. Returns None for v1/legacy archives (no index) or on error;
+/// callers fall back to a full extraction offer.
+pub fn zgx_list_paths(archive: &Path) -> Option<Vec<String>> {
+    let mut file = std::fs::File::open(archive).ok()?;
+    use std::io::Read;
+    let mut head = [0u8; 22];
+    if file.read(&mut head).unwrap_or(0) < 22 { return None; }
+    if &head[0..5] != b"LRGEX" || head[5] != 0x03 { return None; } // v3 only
+    use std::io::Seek;
+    let _ = file.seek(std::io::SeekFrom::Start(0));
+    crate::compress::read_path_index(&mut file).ok().flatten()
+        .map(|paths| paths.into_iter()
+            // Index contains both files and dirs; keep entries as-is — the view shows
+            // everything, the filter matches files exactly.
+            .collect())
+}
+
 /// Top-level dispatcher. Routes to the right handler by detected format.
 pub fn extract_archive(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (bool, String) {
     extract_archive_with_password(archive, dest, cancel, None)
@@ -373,6 +391,12 @@ fn extract_zip_with_password(archive: &Path, dest: &Path, cancel: &AtomicBool, p
 }
 
 pub fn extract_archive_with_password(archive: &Path, dest: &Path, cancel: &AtomicBool, password: Option<&str>) -> (bool, String) {
+    extract_archive_selected(archive, dest, cancel, password, None)
+}
+
+/// Extract with an optional selective set (zgx only — see extract_zgx_filtered).
+/// `wanted` = relative paths (forward slashes) to write; others are discarded.
+pub fn extract_archive_selected(archive: &Path, dest: &Path, cancel: &AtomicBool, password: Option<&str>, zgx_wanted: Option<std::collections::HashSet<String>>) -> (bool, String) {
     // Split .zgx detection FIRST (by filename pattern) — before magic-byte detect.
     if crate::segment::parse_split_part(archive).is_some() {
         return extract_split_zgx(archive, dest, cancel);
@@ -383,7 +407,7 @@ pub fn extract_archive_with_password(archive: &Path, dest: &Path, cancel: &Atomi
         return extract_7z_with_password(archive, dest, cancel, password);
     }
     match detect_format(archive) {
-        Some(Format::Zgx) => extract_zgx(archive, dest, cancel),
+        Some(Format::Zgx) => extract_zgx_filtered(archive, dest, cancel, zgx_wanted.as_ref()),
         Some(Format::Zip) => extract_zip_with_password(archive, dest, cancel, password),
         Some(Format::Rar) => extract_rar_with_password(archive, dest, cancel, password),
         Some(Format::SevenZ) => extract_7z_with_password(archive, dest, cancel, password),
@@ -504,6 +528,15 @@ fn rar_has_conflicts(archive: &Path, dest: &Path) -> bool {
 
 /// .zgx = tar + zstd. Byte-counting via ByteReader so the heartbeat tracks bytes.
 fn extract_zgx(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (bool, String) {
+    extract_zgx_filtered(archive, dest, cancel, None)
+}
+
+/// Selective extraction: only entries whose relative path (forward slashes, as
+/// listed by zgx_list_paths) is in `wanted` are WRITTEN. The whole zstd stream is
+/// still decoded (single-stream format — reaching later files requires it), but
+/// non-selected entries are read-and-discarded. Dirs are always created (cheap,
+/// and parents of selected files are needed).
+pub fn extract_zgx_filtered(archive: &Path, dest: &Path, cancel: &AtomicBool, wanted: Option<&std::collections::HashSet<String>>) -> (bool, String) {
     progress::clear_status();
     let label = archive
         .file_name()
@@ -642,7 +675,7 @@ fn extract_zgx(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (bool, Strin
     }
     let mut staging_guard = Some(StagingDir::new(staging.clone()));
 
-    let (result, dir_meta) = extract_zgx_inner(&mut tar, &staging, cancel);
+    let (result, dir_meta) = extract_zgx_inner(&mut tar, &staging, cancel, wanted);
 
     // Move staging into dest on success; on cancel/fail the StagingDir Drop deletes staging.
     match result {
@@ -743,7 +776,7 @@ fn parse_sidecar(body: &[u8]) -> std::collections::HashMap<std::path::PathBuf, (
     m
 }
 
-fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path, cancel: &AtomicBool) -> (ZgxOutcome, Vec<(PathBuf, u64, u64, u32)>) {
+fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path, cancel: &AtomicBool, wanted: Option<&std::collections::HashSet<String>>) -> (ZgxOutcome, Vec<(PathBuf, u64, u64, u32)>) {
     use rayon::prelude::*;
     use std::io::Read;
     use std::path::{Component, PathBuf};
@@ -1070,6 +1103,20 @@ fn extract_zgx_inner<R: std::io::Read>(tar: &mut tar::Archive<R>, dest: &Path, c
         // Regular file.
         let size = entry.header().size().unwrap_or(0);
 
+        // Selective extraction filter: entries not in the wanted set are read-and-
+        // discarded (tar requires consuming entry data; the zstd stream must still be
+        // decoded to reach later entries — single-stream format). Progress still ticks.
+        if let Some(wanted) = wanted {
+            let key = rel.strip_prefix("./").unwrap_or(&rel).to_string_lossy().replace('\\', "/");
+            if !wanted.contains(&key) {
+                let mut sink = std::io::sink();
+                if let Err(e) = std::io::copy(&mut entry, &mut sink) {
+                    return (ZgxOutcome::Failed(format!("skip-read {}: {}", rel.display(), e)), dir_meta_todo);
+                }
+                continue;
+            }
+        }
+
         // Elevated re-pass: skip regular files that already exist — the non-elevated
         // pass wrote them. We're only here to recreate symlinks that need admin.
         if ELEVATED_RERUN.load(std::sync::atomic::Ordering::Relaxed) && outpath.exists() {
@@ -1325,7 +1372,7 @@ fn extract_split_zgx(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (bool,
     // Create dest before extracting (extract_zgx_inner assumes it exists).
     let _ = std::fs::create_dir_all(dest);
 
-    let (result, _) = extract_zgx_inner(&mut tar, dest, cancel);
+    let (result, _) = extract_zgx_inner(&mut tar, dest, cancel, None);
 
     match result {
         ZgxOutcome::Done(skipped) => {

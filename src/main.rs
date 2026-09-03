@@ -24,7 +24,7 @@ use std::time::Duration;
 use slint::{Timer, TimerMode};
 
 slint::slint! {
-    import { VerticalBox, HorizontalBox, Button, LineEdit } from "std-widgets.slint";
+    import { VerticalBox, HorizontalBox, Button, LineEdit, CheckBox, ListView } from "std-widgets.slint";
 
     // Effect 1: gentle glow behind the logo — pulses in place, no expansion.
     component Halo inherits Rectangle {
@@ -259,6 +259,55 @@ slint::slint! {
         }
     }
 
+    struct ViewEntry {
+        path: string,
+        checked: bool,
+    }
+
+    export component ViewWindow inherits Window {
+        title: "LRGEX Compress - View";
+        icon: @image-url("../assets/logo.png");
+        background: #1e1e1e;
+        preferred-width: 560px;
+        preferred-height: 420px;
+        in property <string> archive-name: "";
+        in-out property <[ViewEntry]> entries;
+        in-out property <bool> all-checked: false;
+        callback extract-selected();
+        callback toggle-all();
+        callback close-window();
+
+        VerticalBox {
+            Text {
+                text: root.archive-name;
+                color: #e0e0e0;
+                font-size: 14px;
+                wrap: word-wrap;
+            }
+            HorizontalBox {
+                CheckBox {
+                    text: "Select all";
+                    checked <=> root.all-checked;
+                    toggled => { root.toggle-all(); }
+                }
+            }
+            ListView {
+                for e[i] in root.entries: Rectangle {
+                    height: 26px;
+                    CheckBox {
+                        text: e.path;
+                        checked: e.checked;
+                        toggled => { e.checked = !e.checked; }
+                    }
+                }
+            }
+            HorizontalBox {
+                Button { text: "Extract Selected"; clicked => { root.extract-selected(); } }
+                Button { text: "Close"; clicked => { root.close-window(); } }
+            }
+        }
+    }
+
     export component PasswordWindow inherits Window {
         title: "LRGEX Compress - Password";
         background: #1e1e1e;
@@ -292,6 +341,84 @@ slint::slint! {
     }
 }
 
+/// View window: list a v3 .zgx's contents (from the instant path index), let the
+/// user check entries, then spawn a SECOND exe instance with -x --only <listfile>.
+/// This reuses the entire existing progress UI, staging, cancel, and status JSON —
+/// no extraction logic is duplicated in the view.
+fn run_view_window(archive: &std::path::Path, paths: Vec<String>) {
+    use slint::Model;
+    // Drop DIRECTORY entries from the list: a dir row can't be meaningfully
+    // unchecked (the engine always creates parents of selected files). A path is a
+    // dir iff it is a prefix of its successor in the sorted list — O(n log n), no
+    // format change needed.
+    let mut files: Vec<String> = paths;
+    files.sort();
+    let files: Vec<String> = files
+        .iter()
+        .enumerate()
+        .filter(|(i, p)| {
+            match files.get(i + 1) {
+                Some(next) => !(next.starts_with(p.as_str()) && next.as_bytes().get(p.len()) == Some(&b'/')),
+                None => true,
+            }
+        })
+        .map(|(_, p)| p.clone())
+        .collect();
+    let app = match ViewWindow::new() {
+        Ok(a) => a,
+        Err(_) => return,
+    };
+    let name = archive.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    app.set_archive_name(name.into());
+    let model: std::rc::Rc<slint::VecModel<ViewEntry>> = std::rc::Rc::new(slint::VecModel::from(
+        files.into_iter().map(|p| ViewEntry { path: p.into(), checked: true }).collect::<Vec<_>>()
+    ));
+    app.set_entries(slint::ModelRc::new(model.clone()));
+    app.set_all_checked(true);
+
+    let model_for_toggle = model.clone();
+    let app_weak = app.as_weak();
+    app.on_toggle_all(move || {
+        let app = match app_weak.upgrade() { Some(a) => a, None => return };
+        let all = app.get_all_checked();
+        for i in 0..model_for_toggle.row_count() {
+            if let Some(mut e) = model_for_toggle.row_data(i) {
+                e.checked = all;
+                model_for_toggle.set_row_data(i, e);
+            }
+        }
+    });
+
+    let archive = archive.to_path_buf();
+    let model_for_extract = model.clone();
+    let exe = std::env::current_exe().unwrap_or_default();
+    app.on_extract_selected(move || {
+        let selected: Vec<String> = (0..model_for_extract.row_count())
+            .filter_map(|i| model_for_extract.row_data(i))
+            .filter(|e| e.checked)
+            .map(|e| e.path.to_string())
+            .collect();
+        if selected.is_empty() {
+            return; // nothing checked — ignore
+        }
+        // Write the wanted list to a temp file, spawn a second instance with the
+        // normal extract UI, close the view window.
+        let listfile = std::env::temp_dir().join(format!("lrgex-view-only-{}.txt", std::process::id()));
+        if std::fs::write(&listfile, selected.join("\n")).is_err() {
+            return;
+        }
+        let _ = std::process::Command::new(&exe)
+            .args(["-x", "--only", listfile.to_string_lossy().as_ref(), archive.to_string_lossy().as_ref()])
+            .spawn();
+        let _ = slint::quit_event_loop();
+    });
+
+    app.on_close_window(|| {
+        let _ = slint::quit_event_loop();
+    });
+    let _ = app.run();
+}
+
 fn show_help() {
     let app = match ErrorWindow::new() {
         Ok(a) => a,
@@ -303,6 +430,7 @@ fn show_help() {
          lrgex-compress -x <archive>          Extract → <name>\\ folder\n\
          lrgex-compress -x -h <archive>       Extract here (into the archive's folder)\n\
          lrgex-compress -x -p <password> <archive>   Extract encrypted archive\n\
+         lrgex-compress -v <archive.zgx>      View contents + extract selected files\n\
          lrgex-compress --split [--size <MB>] <folder-or-file>\n\
                                               Compress → split .partNNN.zgx\n\
                                               (default 30 MB; GUI prompts if --size omitted)\n\
@@ -633,6 +761,54 @@ fn main() {
 
     let is_extract = args.len() >= 3 && args[1] == "-x";
 
+    // --- VIEW path (-v archive): list contents, let the user pick, extract selected ---
+    if args.len() >= 3 && args[1] == "-v" {
+        let archive = PathBuf::from(&args[2]);
+        if archive.as_os_str().len() > 247 {
+            show_error(&format!("Path too long ({} characters).\nMove the file to a shorter path and try again.\n\n{}", archive.as_os_str().len(), archive.display()));
+            return;
+        }
+        if !archive.is_file() {
+            show_error(&format!("Archive not found:\n{}", archive.display()));
+            return;
+        }
+        // Only v3 zgx has the instant path index. Other formats/versions: say so.
+        let paths = match crate::extract::zgx_list_paths(&archive) {
+            Some(p) if !p.is_empty() => p,
+            _ => {
+                show_error(&format!("This archive cannot be previewed.\n\nPreview needs a v3 .zgx archive (created by LRGEX Compress v1.6.0+).\nOther formats and legacy archives extract fully instead:\n{}", archive.display()));
+                return;
+            }
+        };
+        run_view_window(&archive, paths);
+        return;
+    }
+
+    // --only <listfile> flag (used by the view window's Extract Selected): newline-
+    // separated relative paths of entries to write. Zgx-only.
+    let only_wanted: Option<std::collections::HashSet<String>> = {
+        let mut set: Option<std::collections::HashSet<String>> = None;
+        let mut i = 0;
+        while i < args.len() {
+            if args[i] == "--only" && i + 1 < args.len() {
+                match std::fs::read_to_string(&args[i + 1]) {
+                    Ok(content) => {
+                        let s: std::collections::HashSet<String> = content
+                            .lines()
+                            .map(|l| l.trim_end_matches('\r').to_string())
+                            .filter(|l| !l.is_empty())
+                            .collect();
+                        set = Some(s);
+                    }
+                    Err(_) => { /* unreadable listfile — extract everything */ }
+                }
+                break;
+            }
+            i += 1;
+        }
+        set
+    };
+
     // --- EXTRACT path (no multi-select) ---
     if is_extract {
         // Parse positional args, skipping flags (-p <value>, -h, -x, -p)
@@ -644,8 +820,8 @@ fn main() {
             for (i, arg) in args.iter().enumerate() {
                 if i == 0 { continue; } // exe name
                 if skip_next { skip_next = false; continue; }
-                if arg == "-x" || arg == "-h" || arg == "-p" { 
-                    if arg == "-p" { skip_next = true; } // skip the password value
+                if arg == "-x" || arg == "-h" || arg == "-p" || arg == "--only" { 
+                    if arg == "-p" || arg == "--only" { skip_next = true; } // skip the value
                     continue; 
                 }
                 // First non-flag positional arg = the archive path
@@ -686,7 +862,7 @@ fn main() {
         // See the OpKind::Extract arm in run_one. V3 archives make the conflict check
         // instant via the path index; the window appears the moment the user double-clicks.
         let password = cli_password.clone();
-        run_one(op_label, Some(op_detail), true, dest, OpKind::Extract(archive, password, elevated_rerun));
+        run_one(op_label, Some(op_detail), true, dest, OpKind::Extract(archive, password, elevated_rerun, only_wanted));
         return;
     }
 
@@ -764,7 +940,7 @@ enum OpKind {
     CompressMany(Vec<PathBuf>),
     CompressSplit(PathBuf, u32), // (folder, segment_size_mb)
     CompressSplitMany(Vec<PathBuf>, u32), // (inputs, segment_size_mb)
-    Extract(PathBuf, Option<String>, bool), // (archive, optional password, skip_conflict_check=elevated_rerun)
+    Extract(PathBuf, Option<String>, bool, Option<std::collections::HashSet<String>>), // (archive, optional password, skip_conflict_check=elevated_rerun, zgx selective set)
 }
 
 fn run_one(op_label: String, op_detail: Option<String>, cancellable: bool, dest: PathBuf, op: OpKind) {
@@ -789,7 +965,7 @@ fn run_one(op_label: String, op_detail: Option<String>, cancellable: bool, dest:
     // from a non-main thread (deadlocks: nested event loop from worker thread).
     // The progress window is ALREADY VISIBLE (animated sweep) during these checks,
     // so the user sees instant feedback while v1 conflict scans run.
-    if let OpKind::Extract(ref a, ref pw, skip_checks) = op {
+    if let OpKind::Extract(ref a, ref pw, skip_checks, ref wanted) = op {
         if !skip_checks {
             // Conflict check (v3 archives: instant via path index; v1: stream scan)
             if extract::has_conflicts(a, &dest) {
@@ -806,8 +982,8 @@ fn run_one(op_label: String, op_detail: Option<String>, cancellable: bool, dest:
             match prompt_password() {
                 Some(p) => {
                     // Replace the op with the password filled in
-                    if let OpKind::Extract(a, _, sc) = op {
-                        op = OpKind::Extract(a, Some(p), sc);
+                    if let OpKind::Extract(a, _, sc, w) = op {
+                        op = OpKind::Extract(a, Some(p), sc, w);
                     }
                 }
                 None => return, // user cancelled the password prompt
@@ -822,11 +998,11 @@ fn run_one(op_label: String, op_detail: Option<String>, cancellable: bool, dest:
         // silently killing the worker thread (which would leave the GUI hanging).
         let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let result = match op {
-            OpKind::Extract(a, pw, _skip_checks) => {
+            OpKind::Extract(a, pw, _skip_checks, wanted) => {
                 // Pre-worker checks (conflict + password) already ran on the main thread
                 // in run_one before this worker spawned. pw carries the CLI -p flag or
-                // the prompted password. Just extract.
-                extract::extract_archive_with_password(&a, &dest, &cancel_for_thread, pw.as_deref())
+                // the prompted password. Just extract (zgx `wanted` = selective set).
+                extract::extract_archive_selected(&a, &dest, &cancel_for_thread, pw.as_deref(), wanted)
             }
             OpKind::CompressOne(f) => {
                 let r = compress::compress_folder(&f, &dest, &[], &cancel_for_thread);
