@@ -1,4 +1,37 @@
-# Patch Notes - Version 1.7.3 - Current
+# Patch Notes - Version 1.8.0 - Current
+
+## 🔍 View + Selective Extraction (.zgx)
+
+- **New: right-click a .zgx → LRGEX → View** — instantly lists the archive's contents
+  (no decompression; uses the v3 path index) in a file table with checkboxes.
+  Pick the files you want and click **Extract Selected** — only those are written to disk.
+  CLI: `lrgex-compress -v <archive.zgx>`.
+- Selective extraction still decodes the full stream (single-stream format) but writes
+  only the selected files — big disk savings when you need a few files from a huge archive.
+- Only the selected files' folder chain is created — no empty folder skeleton.
+
+## 🟠 Partial Extraction (RAR + zip — WinRAR parity)
+
+- **One corrupt file no longer kills the whole extraction.** Members that fail a
+  checksum are skipped and listed in an amber "Done - N failed: …" summary; all other
+  files extract normally. Corrupt bytes are never delivered.
+- If EVERY file fails, the extraction is a clean total failure (red error) as before.
+- 7z and .zgx remain fail-fast (decoder/format design) — documented.
+
+## 🚨 Real Error Messages
+
+- Extraction failures now show the actual reason (file name + cause, e.g.
+  `fg-05.bin: checksum error`) instead of a bare "Failed" — in the window AND the
+  status JSON. Long messages word-wrap instead of clipping at the window border.
+
+## 🖥 View Window UI
+
+- Proper file table: aligned checkbox column, left-aligned names with ellipsis,
+  zebra rows, header row. (Boxes no longer stagger with filename length.)
+
+---
+
+# Patch Notes - Version 1.7.3
 
 ## 🔒 Security & Bug Fixes
 
