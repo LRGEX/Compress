@@ -641,33 +641,15 @@ pub fn extract_zgx_filtered(archive: &Path, dest: &Path, cancel: &AtomicBool, wa
     let mut tar = tar::Archive::new(buf_decoder);
 
     // Staging-dir isolation (same crash-safety pattern as RAR): extract everything to a
-    // hidden temp sibling first, then move into dest ONLY on full success. Cancel/fail
-    // deletes staging — the user's dest is never touched and no half-extracted folder remains.
-    let staging = dest.parent()
-        .unwrap_or_else(|| std::path::Path::new("."))
-        .join(format!(".{}.lrgex-zgx-staging-{}",
-            dest.file_name().and_then(|n| n.to_str()).unwrap_or("archive"),
-            std::process::id()));
-    // Stale staging from a previous crash — same orphan recovery as RAR (never delete blindly)
-    if staging.exists() {
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis()).unwrap_or(0);
-        let orphan = staging.with_file_name(format!("{}.ORPHAN-{}-{}",
-            staging.file_name().and_then(|n| n.to_str()).unwrap_or("lrgex-staging"),
-            std::process::id(), ts));
-        match std::fs::rename(&staging, &orphan) {
-            Ok(()) => { let _ = std::fs::write(orphan.join("RECOVERY-README.txt"),
-                "LRGEX Compress found an interrupted extraction. Files here were not yet\r\nmoved into the destination. Move them manually if needed.\r\n"); }
-            Err(_) => {
-                // Can't move aside — the staging dir may hold the ONLY copy of unmoved files.
-                // DO NOT delete. Surface a loud error (same as RAR).
-                prog.finish(4);
-                let _ = heartbeat.join();
-                return (false, format!("Found a previous interrupted extraction at {} — could not move it aside. Please inspect it manually.", staging.display()));
-            }
-        }
-    }
+    // HIDDEN staging dir INSIDE the destination first, then move into place on full
+    // success. LAW: Extract To means ZERO bytes on any partition except the chosen
+    // destination — staging lives on the destination's partition by construction,
+    // works for drive roots (D:\), and is ALWAYS removed (success/fail/cancel).
+    let _ = std::fs::create_dir_all(dest);
+    let staging = dest.join(format!(".lrgex-zgx-staging-{}", std::process::id()));
+    // Stale staging from a previous crash — delete it (staging is internal machinery;
+    // it must never linger in the user's destination).
+    let _ = std::fs::remove_dir_all(&staging);
     if std::fs::create_dir_all(&staging).is_err() {
         prog.finish(4);
         let _ = heartbeat.join();
@@ -698,12 +680,13 @@ pub fn extract_zgx_filtered(archive: &Path, dest: &Path, cancel: &AtomicBool, wa
                     }
                 }
                 Err(e) => {
-                    if let Some(g) = staging_guard.take() { std::mem::forget(g); }
-                    let _ = std::fs::write(staging.join("RECOVERY-README.txt"),
-                        "LRGEX Compress could not move some files.\r\nCopy them manually if needed.\r\n");
+                    // Staging is internal machinery — NEVER linger in the user's
+                    // destination (user law). The archive remains for re-extraction.
+                    if let Some(g) = staging_guard.take() { drop(g); } // retry-delete
+                    let _ = std::fs::remove_dir_all(&staging);
                     prog.finish(4);
                     let _ = heartbeat.join();
-                    return (false, format!("move from staging failed ({e}): unmoved files preserved at {}", staging.display()));
+                    return (false, format!("move into destination failed: {}", e));
                 }
             }
         }
@@ -1763,22 +1746,12 @@ fn extract_rar_impl(archive: &Path, dest: &Path, cancel: &AtomicBool, password: 
     prog.set_totals(file_count, total_bytes);
     prog.set_phase(1);
 
-    // 3. Staging dir (same crash-safety as the old path)
+    // 3. Staging dir — INSIDE the destination (same LAW as zgx: Extract To writes
+    // ZERO bytes outside the chosen destination; works for drive roots; always removed).
     let result = (|| -> Result<(), String> {
         std::fs::create_dir_all(dest).map_err(|e| e.to_string())?;
-        let staging = dest.parent().unwrap_or_else(|| std::path::Path::new("."))
-            .join(format!(".{}.lrgex-rar-staging-{}",
-                dest.file_name().and_then(|n| n.to_str()).unwrap_or("archive"), std::process::id()));
-        if staging.exists() {
-            let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
-            let orphan = staging.with_file_name(format!("{}.ORPHAN-{}-{}",
-                staging.file_name().and_then(|n| n.to_str()).unwrap_or("lrgex-staging"), std::process::id(), ts));
-            match std::fs::rename(&staging, &orphan) {
-                Ok(()) => { let _ = std::fs::write(orphan.join("RECOVERY-README.txt"),
-                    "LRGEX Compress found an interrupted extraction. Files here were not yet\r\nmoved into the destination. Move them manually if needed.\r\n"); }
-                Err(_) => { return Err(format!("Found a previous interrupted extraction at {} - could not move it aside.", staging.display())); }
-            }
-        }
+        let staging = dest.join(format!(".lrgex-rar-staging-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&staging); // stale staging from a crash — never linger
         std::fs::create_dir_all(&staging).map_err(|e| format!("staging mkdir: {e}"))?;
         let mut staging_guard = Some(StagingDir::new(staging.clone()));
 
@@ -1908,13 +1881,14 @@ fn extract_rar_impl(archive: &Path, dest: &Path, cancel: &AtomicBool, password: 
                 member_failures.len(), members.len(), member_failures.join("; ")));
         }
 
-        // 5. Move staging into dest (same as old path)
+        // 5. Move staging into dest (staging is INSIDE dest — same-volume renames)
         match move_dir_contents(&staging, dest) {
             Ok(()) => { if let Some(g) = staging_guard.take() { g.disarm(); } let _ = std::fs::remove_dir_all(&staging); Ok(()) }
             Err(e) => {
-                if let Some(g) = staging_guard.take() { std::mem::forget(g); }
-                let _ = std::fs::write(staging.join("RECOVERY-README.txt"), "LRGEX Compress could not move some files.\r\nCopy them manually if needed.\r\n");
-                Err(format!("move from staging failed ({e}): unmoved files preserved at {}", staging.display()))
+                // Never linger (user law): staging is deleted; archive remains for retry.
+                if let Some(g) = staging_guard.take() { drop(g); }
+                let _ = std::fs::remove_dir_all(&staging);
+                Err(format!("move into destination failed: {}", e))
             }
         }
     })();
@@ -2182,10 +2156,11 @@ fn extract_7z_multi(parts: &[PathBuf], dest: &Path, cancel: &AtomicBool, label: 
 
     prog.set_phase(1);
 
-    // Concat all parts into a temp file in the SYSTEM temp dir (avoids path-with-
-    // space issues in the archive's parent folder, and ensures space on the system drive).
-    let temp_dir = std::env::temp_dir();
-    let tmp_file = temp_dir.join(format!("lrgex-7z-concat-{}.tmp", std::process::id()));
+    // Concat all parts into a temp file INSIDE the destination (user law: Extract To
+    // writes ZERO bytes outside the chosen destination — never the system %TEMP%).
+    let _ = std::fs::create_dir_all(dest);
+    let tmp_file = dest.join(format!(".lrgex-7z-concat-{}.tmp", std::process::id()));
+    // Always cleaned below (success, error, and Drop-style paths).
     let prog_concat = prog.clone();
     let result = (|| -> Result<(), String> {
         {

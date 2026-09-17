@@ -1000,7 +1000,7 @@ fn run_one(op_label: String, op_detail: Option<String>, cancellable: bool, dest:
     // from a non-main thread (deadlocks: nested event loop from worker thread).
     // The progress window is ALREADY VISIBLE (animated sweep) during these checks,
     // so the user sees instant feedback while v1 conflict scans run.
-    if let OpKind::Extract(ref a, ref pw, skip_checks, ref wanted) = op {
+    if let OpKind::Extract(ref a, ref pw, skip_checks, ref _wanted) = op {
         if !skip_checks {
             // Conflict check (v3 archives: instant via path index; v1: stream scan)
             if extract::has_conflicts(a, &dest) {
