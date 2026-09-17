@@ -445,6 +445,7 @@ fn show_help() {
          lrgex-compress <folder-or-file>      Compress → <name>.zgx\n\
          lrgex-compress -x <archive>          Extract → <name>\\ folder\n\
          lrgex-compress -x -h <archive>       Extract here (into the archive's folder)\n\
+         lrgex-compress -x -o <archive>       Extract To... (pick destination folder)\n\
          lrgex-compress -x -p <password> <archive>   Extract encrypted archive\n\
          lrgex-compress -v <archive.zgx>      View contents + extract selected files\n\
          lrgex-compress --split [--size <MB>] <folder-or-file>\n\
@@ -830,13 +831,16 @@ fn main() {
         // Parse positional args, skipping flags (-p <value>, -h, -x, -p)
         // This handles: -x archive | -x -h archive | -x -p pw archive | -x -p pw -h archive
         let extract_here = args.iter().any(|a| a == "-h");
+        // "Extract To...": -o → folder picker decides the destination (rfd).
+        // Cancel in the picker = abort quietly (user changed their mind).
+        let extract_to = args.iter().any(|a| a == "-o");
         let archive_path = {
             let mut found: Option<&String> = None;
             let mut skip_next = false;
             for (i, arg) in args.iter().enumerate() {
                 if i == 0 { continue; } // exe name
                 if skip_next { skip_next = false; continue; }
-                if arg == "-x" || arg == "-h" || arg == "-p" || arg == "--only" { 
+                if arg == "-x" || arg == "-h" || arg == "-p" || arg == "-o" || arg == "--only" { 
                     if arg == "-p" || arg == "--only" { skip_next = true; } // skip the value
                     continue; 
                 }
@@ -863,7 +867,22 @@ fn main() {
         let name = archive.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
         let op_label = "Extracting".to_string();
         let op_detail = name.clone();
-        let dest: PathBuf = if extract_here {
+        let dest: PathBuf = if extract_to {
+            // Extract To...: user picks the destination folder. Contents extract
+            // DIRECTLY into it (no subfolder) — that's what "extract to" means.
+            // (Env override keeps this path testable/automatable without a GUI.)
+            if let Ok(fixed) = std::env::var("LRGEX_EXTRACT_DEST") {
+                PathBuf::from(fixed)
+            } else {
+                match rfd::FileDialog::new()
+                    .set_title("Extract to folder...")
+                    .pick_folder()
+                {
+                    Some(p) => p,
+                    None => return, // cancelled — user changed their mind, no error
+                }
+            }
+        } else if extract_here {
             archive.parent().unwrap_or(PathBuf::from(".").as_path()).to_path_buf()
         } else if let Some((base, _)) = crate::segment::parse_split_part(&archive) {
             // Split archive: strip .partNNN.zgx → base name (e.g. "src" not "src.part001").

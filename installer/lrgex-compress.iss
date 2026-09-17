@@ -124,6 +124,12 @@ Root: HKA; Subkey: "Software\Classes\LRGEX.zgx\ContextMenus\LRGEX\shell\extractH
     ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName},0"
 Root: HKA; Subkey: "Software\Classes\LRGEX.zgx\ContextMenus\LRGEX\shell\extractHere\command"; \
     ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" -x -h ""%1"""
+Root: HKA; Subkey: "Software\Classes\LRGEX.zgx\ContextMenus\LRGEX\shell\extractTo"; \
+    ValueType: string; ValueName: ""; ValueData: "Extract To..."; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\LRGEX.zgx\ContextMenus\LRGEX\shell\extractTo"; \
+    ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName},0"
+Root: HKA; Subkey: "Software\Classes\LRGEX.zgx\ContextMenus\LRGEX\shell\extractTo\command"; \
+    ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" -x -o ""%1"""
 Root: HKA; Subkey: "Software\Classes\LRGEX.zgx\ContextMenus\LRGEX\shell\view"; \
     ValueType: string; ValueName: ""; ValueData: "View"; Flags: uninsdeletekey
 Root: HKA; Subkey: "Software\Classes\LRGEX.zgx\ContextMenus\LRGEX\shell\view"; \
@@ -188,6 +194,12 @@ Root: HKA; Subkey: "Software\Classes\LRGEX.ContextMenus\LRGEX\shell\extractHere"
     ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName},0"
 Root: HKA; Subkey: "Software\Classes\LRGEX.ContextMenus\LRGEX\shell\extractHere\command"; \
     ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" -x -h ""%1"""
+Root: HKA; Subkey: "Software\Classes\LRGEX.ContextMenus\LRGEX\shell\extractTo"; \
+    ValueType: string; ValueName: ""; ValueData: "Extract To..."; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\LRGEX.ContextMenus\LRGEX\shell\extractTo"; \
+    ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName},0"
+Root: HKA; Subkey: "Software\Classes\LRGEX.ContextMenus\LRGEX\shell\extractTo\command"; \
+    ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" -x -o ""%1"""
 
 [Code]
 const
