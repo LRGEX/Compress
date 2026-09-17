@@ -1,4 +1,16 @@
-# Patch Notes - Version 1.8.0 - Current
+# Patch Notes - Version 1.8.1 - Current
+
+## 📂 Extract To...
+
+- **Right-click an archive → LRGEX → Extract To...** — pick any destination folder
+  with the folder browser; contents extract directly into it. Perfect when the
+  archive's own drive is full and you want another partition.
+- CLI: `lrgex-compress -x -o <archive>`.
+- Available for .zgx, .zip, .rar, and .7z right-clicks.
+
+---
+
+# Patch Notes - Version 1.8.0
 
 ## 🔍 View + Selective Extraction (.zgx)
 

@@ -1,0 +1,25 @@
+Windows Registry Editor Version 5.00
+
+; Adds "LRGEX -> Extract To..." to the right-click menu of .zgx / .zip / .rar / .7z.
+; Created for v1.8.1's Extract To feature.
+; Import: double-click this file, confirm the UAC prompt (writes to HKLM —
+; the install is machine-wide; uninsdeletekey on the parent keys cleans it
+; on uninstall).
+; NOTE: the installer (lrgex-compress.iss) writes these keys itself —
+; after the next installer run, this manual import is redundant.
+
+; .zgx cascade
+[HKEY_LOCAL_MACHINE\Software\Classes\LRGEX.zgx\ContextMenus\LRGEX\shell\extractTo]
+@="Extract To..."
+"Icon"="C:\\Program Files\\LRGEX Compress\\lrgex-compress.exe,0"
+
+[HKEY_LOCAL_MACHINE\Software\Classes\LRGEX.zgx\ContextMenus\LRGEX\shell\extractTo\command]
+@="\"C:\\Program Files\\LRGEX Compress\\lrgex-compress.exe\" -x -o \"%1\""
+
+; Shared cascade (zip/rar/7z via SystemFileAssociations)
+[HKEY_LOCAL_MACHINE\Software\Classes\LRGEX.ContextMenus\LRGEX\shell\extractTo]
+@="Extract To..."
+"Icon"="C:\\Program Files\\LRGEX Compress\\lrgex-compress.exe,0"
+
+[HKEY_LOCAL_MACHINE\Software\Classes\LRGEX.ContextMenus\LRGEX\shell\extractTo\command]
+@="\"C:\\Program Files\\LRGEX Compress\\lrgex-compress.exe\" -x -o \"%1\""
