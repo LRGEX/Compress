@@ -1,4 +1,20 @@
-# Patch Notes - Version 1.8.1 - Current
+# Patch Notes - Version 1.8.2 - Current
+
+## 🔒 Extract To: Zero Bytes Outside the Destination
+
+- **Drive-root destinations fully supported**: picking a drive root (e.g. `D:\`) now extracts
+  with ALL temp/staging on the destination partition. Before: the staging folder fell
+  back to the working directory (e.g. Desktop) — on a full system drive this failed
+  the job and left a giant hidden folder behind.
+- **Staging is always cleaned up** — success, cancel, failure, or crash recovery. No
+  more RECOVERY folders or leftover temp directories, for any format.
+- **7z multi-volume**: the part-concatenation temp moved from the system %TEMP% into
+  the destination.
+- Applies to .zgx, .rar, .zip, .7z (single and multi-volume).
+
+---
+
+# Patch Notes - Version 1.8.1
 
 ## 📂 Extract To...
 
