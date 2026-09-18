@@ -1,5 +1,7 @@
 # Patch Notes - Version 1.8.2 - Current
 
+> **Note:** behavior refined post-release — Extract To now creates an archive-named subfolder (Desktop Folder.zgx → <picked>\Desktop Folder\). The notes below describe the initial 1.8.2 release; the subfolder behavior ships in the next version.
+
 ## 🔒 Extract To: Zero Bytes Outside the Destination
 
 - **Drive-root destinations fully supported**: picking a drive root (e.g. `D:\`) now extracts

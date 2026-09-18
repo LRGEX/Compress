@@ -868,10 +868,12 @@ fn main() {
         let op_label = "Extracting".to_string();
         let op_detail = name.clone();
         let dest: PathBuf = if extract_to {
-            // Extract To...: user picks the destination folder. Contents extract
-            // DIRECTLY into it (no subfolder) — that's what "extract to" means.
+            // Extract To...: user picks the destination folder; the archive extracts
+            // INTO A NAMED SUBFOLDER of it — same name as the archive
+            // (Desktop Folder.zgx → <picked>\Desktop Folder\). WinRAR-style: keeps
+            // multiple extractions organized inside the picked location.
             // (Env override keeps this path testable/automatable without a GUI.)
-            if let Ok(fixed) = std::env::var("LRGEX_EXTRACT_DEST") {
+            let picked: PathBuf = if let Ok(fixed) = std::env::var("LRGEX_EXTRACT_DEST") {
                 PathBuf::from(fixed)
             } else {
                 match rfd::FileDialog::new()
@@ -881,7 +883,13 @@ fn main() {
                     Some(p) => p,
                     None => return, // cancelled — user changed their mind, no error
                 }
-            }
+            };
+            // Strip the extension: Desktop Folder.zgx → "Desktop Folder".
+            // (Split/multi-volume stems handled by the same with_extension used below.)
+            let stem = archive.file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "Extracted".to_string());
+            picked.join(stem)
         } else if extract_here {
             archive.parent().unwrap_or(PathBuf::from(".").as_path()).to_path_buf()
         } else if let Some((base, _)) = crate::segment::parse_split_part(&archive) {

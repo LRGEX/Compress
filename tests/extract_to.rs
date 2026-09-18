@@ -1,6 +1,6 @@
-// "Extract To..." (-o): user picks a destination folder; contents extract
-// DIRECTLY into it (no subfolder). Tested via the LRGEX_EXTRACT_DEST env
-// override so no GUI folder picker is needed in CI.
+// "Extract To..." (-o): user picks a destination folder; the archive extracts
+// into an archive-named SUBFOLDER of it (Desktop Folder.zgx → <picked>\Desktop Folder\).
+// Tested via the LRGEX_EXTRACT_DEST env override so no GUI folder picker is needed in CI.
 
 use std::time::Duration;
 
@@ -59,9 +59,10 @@ fn extract_to_uses_picked_folder_directly() {
     let _ = child.wait();
     let _ = std::fs::remove_file(&status_path);
 
-    assert!(picked.join("one.txt").exists(), "one.txt not in picked folder");
-    assert!(picked.join("two.txt").exists(), "two.txt not in picked folder");
-    assert_eq!(std::fs::read(picked.join("one.txt")).unwrap(), b"one");
+    let sub = picked.join("src"); // archive-named subfolder
+    assert!(sub.join("one.txt").exists(), "one.txt not in archive-named subfolder");
+    assert!(sub.join("two.txt").exists(), "two.txt not in archive-named subfolder");
+    assert_eq!(std::fs::read(sub.join("one.txt")).unwrap(), b"one");
     eprintln!("PASS extract_to: files land directly in the picked folder");
 }
 
@@ -121,12 +122,13 @@ fn extract_to_writes_nothing_outside_destination() {
     let _ = child.wait();
     let _ = std::fs::remove_file(&status_path);
 
-    assert!(dest.join("data.bin").exists(), "extraction missing");
+    assert!(dest.join("src").join("data.bin").exists(), "extraction missing in archive-named subfolder");
     // THE LAW, part 2: dest itself must hold ONLY the extracted content — no lingering
     // staging dir inside it either.
     let dest_entries: Vec<String> = std::fs::read_dir(&dest).unwrap()
         .flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
-    assert_eq!(dest_entries, vec!["data.bin".to_string()],
+    // dest holds the archive-named subfolder only ("src") — no staging/temp litter.
+    assert_eq!(dest_entries, vec!["src".to_string()],
         "leftover staging/temp inside dest: {:?}", dest_entries);
     // THE LAW, part 1: the parent must contain ONLY dest — no staging, no temps, no litter.
     let after: Vec<std::path::PathBuf> = std::fs::read_dir(&parent).unwrap()
