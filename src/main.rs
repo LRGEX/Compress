@@ -398,7 +398,10 @@ slint::slint! {
 /// duplicated in the view.
 fn run_view_window(archive: &std::path::Path, paths: Vec<String>) {
     use slint::Model;
-    let mut tree = viewtree::ViewTree::build(paths);
+    // ONE shared tree behind Rc<RefCell> — every callback must see the SAME live
+    // state. (Bug once: per-callback clones made "deselect all" update one copy
+    // while folder clicks read a stale copy — ticks appeared on everything.)
+    let tree = std::rc::Rc::new(std::cell::RefCell::new(viewtree::ViewTree::build(paths)));
     let app = match ViewWindow::new() {
         Ok(a) => a,
         Err(_) => return,
@@ -421,7 +424,7 @@ fn run_view_window(archive: &std::path::Path, paths: Vec<String>) {
 
     let model: std::rc::Rc<slint::VecModel<ViewEntry>> =
         std::rc::Rc::new(slint::VecModel::from(
-            tree.flatten_visible().iter().map(row_entry).collect::<Vec<_>>(),
+            tree.borrow().flatten_visible().iter().map(row_entry).collect::<Vec<_>>(),
         ));
     app.set_entries(slint::ModelRc::new(model.clone()));
 
@@ -435,7 +438,10 @@ fn run_view_window(archive: &std::path::Path, paths: Vec<String>) {
             app.set_all_checked(tree.all_selected());
         }
     };
-    refresh_status(&tree);
+    {
+        let t = tree.borrow();
+        refresh_status(&t);
+    }
 
     // In-place row refresh after a checkbox toggle — same visible rows, only
     // checked/partial flags change (and folder glyphs). Rebuilding the model
@@ -471,9 +477,12 @@ fn run_view_window(archive: &std::path::Path, paths: Vec<String>) {
         let app_weak = app.as_weak();
         app.on_toggle_all(move || {
             let all = match app_weak.upgrade() { Some(a) => a.get_all_checked(), None => return };
-            tree.set_all(all);
-            refresh_flags(&tree);
-            refresh_status(&tree);
+            {
+                tree.borrow_mut().set_all(all);
+            }
+            let t = tree.borrow();
+            refresh_flags(&t);
+            refresh_status(&t);
         });
     }
 
@@ -483,9 +492,12 @@ fn run_view_window(archive: &std::path::Path, paths: Vec<String>) {
         let refresh_status = refresh_status.clone();
         let refresh_flags = refresh_flags.clone();
         app.on_toggle_row(move |node| {
-            tree.toggle(node as usize);
-            refresh_flags(&tree);
-            refresh_status(&tree);
+            {
+                tree.borrow_mut().toggle(node as usize);
+            }
+            let t = tree.borrow();
+            refresh_flags(&t);
+            refresh_status(&t);
         });
     }
 
@@ -495,9 +507,12 @@ fn run_view_window(archive: &std::path::Path, paths: Vec<String>) {
         let refresh_status = refresh_status.clone();
         let rebuild = rebuild.clone();
         app.on_toggle_expand(move |node| {
-            tree.toggle_expand(node as usize);
-            rebuild(&tree);
-            refresh_status(&tree);
+            {
+                tree.borrow_mut().toggle_expand(node as usize);
+            }
+            let t = tree.borrow();
+            rebuild(&t);
+            refresh_status(&t);
         });
     }
 
@@ -506,7 +521,7 @@ fn run_view_window(archive: &std::path::Path, paths: Vec<String>) {
     {
         let tree = tree.clone();
         app.on_extract_selected(move || {
-            let selected = tree.collect_checked_files();
+            let selected = tree.borrow().collect_checked_files();
             if selected.is_empty() {
                 return; // nothing checked — ignore
             }
