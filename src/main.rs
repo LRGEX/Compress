@@ -15,6 +15,7 @@ mod multiselect;
 mod progress;
 mod segment;
 mod update;
+mod viewtree;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -260,8 +261,14 @@ slint::slint! {
     }
 
     struct ViewEntry {
-        path: string,
+        label: string,      // display name (file or folder)
+        path: string,       // full archive path
+        depth: int,         // nesting for indentation
+        is-folder: bool,
         checked: bool,
+        partial: bool,      // some-but-not-all descendants checked
+        expanded: bool,
+        node: int,          // stable node index for callbacks
     }
 
     export component ViewWindow inherits Window {
@@ -271,10 +278,13 @@ slint::slint! {
         preferred-width: 560px;
         preferred-height: 420px;
         in property <string> archive-name: "";
+        in property <string> status-text: "";
         in-out property <[ViewEntry]> entries;
         in-out property <bool> all-checked: false;
         callback extract-selected();
         callback toggle-all();
+        callback toggle-row(int);
+        callback toggle-expand(int);
         callback close-window();
 
         VerticalBox {
@@ -286,32 +296,55 @@ slint::slint! {
             }
             HorizontalBox {
                 padding: 0;
-                // Header row — aligned with the table below (checkbox col + name col).
-                Rectangle { width: 30px; CheckBox { text: ""; checked <=> root.all-checked; toggled => { root.toggle-all(); } } }
+                // Header row — checkbox col + name col + live status, aligned below.
+                Rectangle {
+                    width: 30px;
+                    CheckBox { text: ""; checked <=> root.all-checked; toggled => { root.toggle-all(); } }
+                }
                 Text { text: "Name"; color: #9e9e9e; font-size: 12px; vertical-alignment: center; }
+                Rectangle { horizontal-stretch: 1; }
+                Text { text: root.status-text; color: #9e9e9e; font-size: 12px; vertical-alignment: center; }
             }
             Rectangle { height: 1px; background: #3a3a3a; }
             ListView {
                 for e[i] in root.entries: Rectangle {
                     height: 26px;
                     background: Math.mod(i, 2) == 1 ? #262626 : transparent;
-                    // Fixed checkbox column — every row's box sits at the SAME x,
-                    // regardless of filename length (user-reported alignment bug:
-                    // CheckBox text-width made the boxes stagger).
+                    // Chevron (folders only) — click row start to expand/collapse.
+                    Text {
+                        x: 6px + e.depth * 16px;
+                        width: 16px;
+                        text: e.is-folder ? (e.expanded ? "▾" : "▸") : "";
+                        color: #9e9e9e;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+                    TouchArea {
+                        x: e.depth * 16px;
+                        width: 26px;
+                        height: parent.height;
+                        clicked => { if (e.is-folder) { root.toggle-expand(e.node); } }
+                    }
+                    // Checkbox column — indented by depth (stays right of the chevron).
+                    // Checked+partial is shown by Rust setting checked=true; the
+                    // half-state is conveyed by the folder glyph + row tint below.
                     CheckBox {
-                        x: 6px; y: (parent.height - self.height) / 2;
+                        x: 28px + e.depth * 16px;
+                        y: (parent.height - self.height) / 2;
                         width: 20px;
                         text: "";
                         checked: e.checked;
-                        toggled => { e.checked = !e.checked; }
+                        toggled => { root.toggle-row(e.node); }
                     }
-                    // Name column: fixed offset, left-aligned, ellipsized overflow.
+                    // Name column: indented by depth, left-aligned, ellipsized overflow.
+                    // Partial folders read as "mixed" via a ⊟-style suffix in the label
+                    // text is set from Rust; keep rendering dumb here.
                     Text {
-                        x: 34px;
-                        width: parent.width - 42px;
+                        x: 54px + e.depth * 16px;
+                        width: parent.width - 62px - e.depth * 16px;
                         vertical-alignment: center;
-                        text: e.path;
-                        color: #e0e0e0;
+                        text: e.is-folder ? (e.partial ? "▣ " + e.label : "📁 " + e.label) : e.label;
+                        color: e.is-folder ? #e8e8e8 : #d8d8d8;
                         font-size: 13px;
                         overflow: elide;
                     }
@@ -357,77 +390,138 @@ slint::slint! {
     }
 }
 
-/// View window: list a v3 .zgx's contents (from the instant path index), let the
-/// user check entries, then spawn a SECOND exe instance with -x --only <listfile>.
-/// This reuses the entire existing progress UI, staging, cancel, and status JSON —
-/// no extraction logic is duplicated in the view.
+/// View window: list a v3 .zgx's contents (from the instant path index) as a
+/// TREE — folder rows expand/collapse and check/uncheck their whole subtree
+/// (WinRAR behavior; one click selects a 3,000-file folder). Then spawn a SECOND
+/// exe instance with -x --only <listfile>. This reuses the entire existing
+/// progress UI, staging, cancel, and status JSON — no extraction logic is
+/// duplicated in the view.
 fn run_view_window(archive: &std::path::Path, paths: Vec<String>) {
     use slint::Model;
-    // Drop DIRECTORY entries from the list: a dir row can't be meaningfully
-    // unchecked (the engine always creates parents of selected files). A path is a
-    // dir iff it is a prefix of its successor in the sorted list — O(n log n), no
-    // format change needed.
-    let mut files: Vec<String> = paths;
-    files.sort();
-    let files: Vec<String> = files
-        .iter()
-        .enumerate()
-        .filter(|(i, p)| {
-            match files.get(i + 1) {
-                Some(next) => !(next.starts_with(p.as_str()) && next.as_bytes().get(p.len()) == Some(&b'/')),
-                None => true,
-            }
-        })
-        .map(|(_, p)| p.clone())
-        .collect();
+    let mut tree = viewtree::ViewTree::build(paths);
     let app = match ViewWindow::new() {
         Ok(a) => a,
         Err(_) => return,
     };
     let name = archive.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
     app.set_archive_name(name.into());
-    let model: std::rc::Rc<slint::VecModel<ViewEntry>> = std::rc::Rc::new(slint::VecModel::from(
-        files.into_iter().map(|p| ViewEntry { path: p.into(), checked: true }).collect::<Vec<_>>()
-    ));
-    app.set_entries(slint::ModelRc::new(model.clone()));
-    app.set_all_checked(true);
 
-    let model_for_toggle = model.clone();
-    let app_weak = app.as_weak();
-    app.on_toggle_all(move || {
-        let app = match app_weak.upgrade() { Some(a) => a, None => return };
-        let all = app.get_all_checked();
-        for i in 0..model_for_toggle.row_count() {
-            if let Some(mut e) = model_for_toggle.row_data(i) {
-                e.checked = all;
-                model_for_toggle.set_row_data(i, e);
+    fn row_entry(r: &viewtree::RowView) -> ViewEntry {
+        ViewEntry {
+            label: r.label.clone().into(),
+            path: r.path.clone().into(),
+            depth: r.depth as i32,
+            is_folder: r.is_folder,
+            checked: r.checked,
+            partial: r.partial,
+            expanded: r.expanded,
+            node: r.node as i32,
+        }
+    }
+
+    let model: std::rc::Rc<slint::VecModel<ViewEntry>> =
+        std::rc::Rc::new(slint::VecModel::from(
+            tree.flatten_visible().iter().map(row_entry).collect::<Vec<_>>(),
+        ));
+    app.set_entries(slint::ModelRc::new(model.clone()));
+
+    // Status line + header checkbox sync ("3000 of 9000 selected").
+    let refresh_status = {
+        let app_weak = app.as_weak();
+        move |tree: &viewtree::ViewTree| {
+            let app = match app_weak.upgrade() { Some(a) => a, None => return };
+            let (sel, total) = tree.selection_stats();
+            app.set_status_text(format!("{} of {} selected", sel, total).into());
+            app.set_all_checked(tree.all_selected());
+        }
+    };
+    refresh_status(&tree);
+
+    // In-place row refresh after a checkbox toggle — same visible rows, only
+    // checked/partial flags change (and folder glyphs). Rebuilding the model
+    // here would reset ListView scroll to top mid-9,000-row-list — forbidden.
+    let refresh_flags = {
+        let model = model.clone();
+        move |tree: &viewtree::ViewTree| {
+            for (i, r) in tree.flatten_visible().iter().enumerate() {
+                if let Some(cur) = model.row_data(i) {
+                    if cur.checked != r.checked || cur.partial != r.partial {
+                        model.set_row_data(i, row_entry(r));
+                    }
+                }
             }
         }
-    });
+    };
+
+    // Full rebuild — ONLY for expand/collapse (row set itself changes).
+    let rebuild = {
+        let model = model.clone();
+        move |tree: &viewtree::ViewTree| {
+            let rows = tree.flatten_visible();
+            let entries: Vec<ViewEntry> = rows.iter().map(row_entry).collect();
+            model.set_vec(entries);
+        }
+    };
+
+    // Header checkbox: select/deselect everything.
+    {
+        let mut tree = tree.clone();
+        let refresh_status = refresh_status.clone();
+        let refresh_flags = refresh_flags.clone();
+        let app_weak = app.as_weak();
+        app.on_toggle_all(move || {
+            let all = match app_weak.upgrade() { Some(a) => a.get_all_checked(), None => return };
+            tree.set_all(all);
+            refresh_flags(&tree);
+            refresh_status(&tree);
+        });
+    }
+
+    // Row checkbox: folder toggles its whole subtree (WinRAR tri-state).
+    {
+        let mut tree = tree.clone();
+        let refresh_status = refresh_status.clone();
+        let refresh_flags = refresh_flags.clone();
+        app.on_toggle_row(move |node| {
+            tree.toggle(node as usize);
+            refresh_flags(&tree);
+            refresh_status(&tree);
+        });
+    }
+
+    // Chevron click: expand/collapse (full model rebuild — structure changed).
+    {
+        let mut tree = tree.clone();
+        let refresh_status = refresh_status.clone();
+        let rebuild = rebuild.clone();
+        app.on_toggle_expand(move |node| {
+            tree.toggle_expand(node as usize);
+            rebuild(&tree);
+            refresh_status(&tree);
+        });
+    }
 
     let archive = archive.to_path_buf();
-    let model_for_extract = model.clone();
     let exe = std::env::current_exe().unwrap_or_default();
-    app.on_extract_selected(move || {
-        let selected: Vec<String> = (0..model_for_extract.row_count())
-            .filter_map(|i| model_for_extract.row_data(i))
-            .filter(|e| e.checked)
-            .map(|e| e.path.to_string())
-            .collect();
-        if selected.is_empty() {
-            return; // nothing checked — ignore
-        }
-        // Write the wanted list to a temp file, spawn a second instance with the
-        // normal extract UI, close the view window.
-        let listfile = std::env::temp_dir().join(format!("lrgex-view-only-{}.txt", std::process::id()));
-        if std::fs::write(&listfile, selected.join("\n")).is_err() {
-            return;
-        }
-        let _ = std::process::Command::new(&exe)
-            .args(["-x", "--only", listfile.to_string_lossy().as_ref(), archive.to_string_lossy().as_ref()])
-            .spawn();
-        let _ = slint::quit_event_loop();
-    });
+    {
+        let tree = tree.clone();
+        app.on_extract_selected(move || {
+            let selected = tree.collect_checked_files();
+            if selected.is_empty() {
+                return; // nothing checked — ignore
+            }
+            // Write the wanted list to a temp file, spawn a second instance with the
+            // normal extract UI, close the view window.
+            let listfile = std::env::temp_dir().join(format!("lrgex-view-only-{}.txt", std::process::id()));
+            if std::fs::write(&listfile, selected.join("\n")).is_err() {
+                return;
+            }
+            let _ = std::process::Command::new(&exe)
+                .args(["-x", "--only", listfile.to_string_lossy().as_ref(), archive.to_string_lossy().as_ref()])
+                .spawn();
+            let _ = slint::quit_event_loop();
+        });
+    }
 
     app.on_close_window(|| {
         let _ = slint::quit_event_loop();

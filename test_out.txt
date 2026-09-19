@@ -1,0 +1,574 @@
+   Compiling lrgex_compress v1.8.2 (E:\LRG\LRG Data Cloud\L.R.G\Devoloping\Coding\Compress)
+warning: unused import: `common::harness`
+  --> tests\secondary_metadata.rs:12:5
+   |
+12 | use common::harness;
+   |     ^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: static `EXE_LOCK` is never used
+  --> tests\common\harness.rs:11:8
+   |
+11 | static EXE_LOCK: Mutex<()> = Mutex::new(());
+   |        ^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `exe` is never used
+  --> tests\common\harness.rs:13:8
+   |
+13 | pub fn exe() -> PathBuf {
+   |        ^^^
+
+warning: function `file_sha256` is never used
+  --> tests\common\harness.rs:19:8
+   |
+19 | pub fn file_sha256(path: &Path) -> String {
+   |        ^^^^^^^^^^^
+
+warning: function `tree_fingerprint` is never used
+  --> tests\common\harness.rs:32:8
+   |
+32 | pub fn tree_fingerprint(root: &Path) -> std::collections::HashMap<String, String> {
+   |        ^^^^^^^^^^^^^^^^
+
+warning: function `walk` is never used
+  --> tests\common\harness.rs:42:4
+   |
+42 | fn walk(root: &Path, cur: &Path, cb: &mut dyn FnMut(String, &Path)) {
+   |    ^^^^
+
+warning: function `run` is never used
+  --> tests\common\harness.rs:54:8
+   |
+54 | pub fn run(args: &[&str], timeout: Duration) -> i32 {
+   |        ^^^
+
+warning: function `failed_phase_for_pid` is never used
+   --> tests\common\harness.rs:102:4
+    |
+102 | fn failed_phase_for_pid(pid: u32) -> bool {
+    |    ^^^^^^^^^^^^^^^^^^^^
+
+warning: function `exe_lock` is never used
+   --> tests\common\harness.rs:108:8
+    |
+108 | pub fn exe_lock() -> std::sync::MutexGuard<'static, ()> {
+    |        ^^^^^^^^
+
+warning: function `compress` is never used
+   --> tests\common\harness.rs:112:8
+    |
+112 | pub fn compress(src: &Path) -> PathBuf {
+    |        ^^^^^^^^
+
+warning: function `extract` is never used
+   --> tests\common\harness.rs:123:8
+    |
+123 | pub fn extract(archive: &Path) -> PathBuf {
+    |        ^^^^^^^
+
+warning: unused import: `std::io::Write`
+  --> tests\checksum_integrity.rs:12:5
+   |
+12 | use std::io::Write;
+   |     ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `std::process::Command`
+  --> tests\checksum_integrity.rs:14:5
+   |
+14 | use std::process::Command;
+   |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `file_sha256` is never used
+  --> tests\common\harness.rs:19:8
+   |
+19 | pub fn file_sha256(path: &Path) -> String {
+   |        ^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `std::io::Write`
+  --> tests\sevenz_round_trip.rs:13:5
+   |
+13 | use std::io::Write;
+   |     ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `std::io::Write`
+  --> tests\sevenz_round_trip.rs:87:9
+   |
+87 |     use std::io::Write;
+   |         ^^^^^^^^^^^^^^
+
+warning: variable does not need to be mutable
+   --> tests\error_reporting.rs:190:9
+    |
+190 |     let mut make = |seed: u64, with_marker: bool| -> Vec<u8> {
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `sha256_not_needed` is never used
+  --> tests\error_reporting.rs:14:4
+   |
+14 | fn sha256_not_needed() {}
+   |    ^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `latest_status_json` is never used
+  --> tests\error_reporting.rs:35:4
+   |
+35 | fn latest_status_json() -> Option<(std::path::PathBuf, String)> {
+   |    ^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::io::Write`
+ --> tests\rar_variants.rs:6:5
+  |
+6 | use std::io::Write;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `Read` and `Write`
+ --> tests\gap_fixes.rs:6:15
+  |
+6 | use std::io::{Read, Write};
+  |               ^^^^  ^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `std::io::Read`
+  --> tests\rar_round_trip.rs:17:9
+   |
+17 |     use std::io::Read;
+   |         ^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Sha256`
+  --> tests\rar_round_trip.rs:20:16
+   |
+20 |     use sha2::{Sha256, Digest};
+   |                ^^^^^^
+
+warning: unused import: `std::os::windows::fs::MetadataExt`
+  --> tests\rar_round_trip.rs:95:9
+   |
+95 |     use std::os::windows::fs::MetadataExt;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `Digest`
+  --> tests\rar_round_trip.rs:20:24
+   |
+20 |     use sha2::{Sha256, Digest};
+   |                        ^^^^^^
+
+warning: unused import: `std::os::windows::io::AsRawHandle`
+  --> tests\metadata_round_trip.rs:18:5
+   |
+18 | use std::os::windows::io::AsRawHandle;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `out`
+  --> tests\selective_extract.rs:29:9
+   |
+29 |     let out = std::process::Command::new(&exe)
+   |         ^^^ help: if this is intentional, prefix it with an underscore: `_out`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `tree_fingerprint` is never used
+  --> tests\common\harness.rs:32:8
+   |
+32 | pub fn tree_fingerprint(root: &Path) -> std::collections::HashMap<String, String> {
+   |        ^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `lrgex_compress` (test "secondary_metadata") generated 11 warnings (run `cargo fix --test "secondary_metadata" -p lrgex_compress` to apply 1 suggestion)
+warning: `lrgex_compress` (test "checksum_integrity") generated 7 warnings (4 duplicates) (run `cargo fix --test "checksum_integrity" -p lrgex_compress` to apply 2 suggestions)
+warning: `lrgex_compress` (test "sevenz_round_trip") generated 2 warnings (run `cargo fix --test "sevenz_round_trip" -p lrgex_compress` to apply 2 suggestions)
+warning: `lrgex_compress` (test "error_reporting") generated 3 warnings (run `cargo fix --test "error_reporting" -p lrgex_compress` to apply 1 suggestion)
+warning: `lrgex_compress` (test "rar_variants") generated 1 warning (run `cargo fix --test "rar_variants" -p lrgex_compress` to apply 1 suggestion)
+warning: `lrgex_compress` (test "gap_fixes") generated 1 warning (run `cargo fix --test "gap_fixes" -p lrgex_compress` to apply 1 suggestion)
+warning: `lrgex_compress` (test "rar_round_trip") generated 4 warnings (run `cargo fix --test "rar_round_trip" -p lrgex_compress` to apply 3 suggestions)
+warning: `lrgex_compress` (test "metadata_round_trip") generated 5 warnings (4 duplicates) (run `cargo fix --test "metadata_round_trip" -p lrgex_compress` to apply 1 suggestion)
+warning: `lrgex_compress` (test "selective_extract") generated 1 warning (run `cargo fix --test "selective_extract" -p lrgex_compress` to apply 1 suggestion)
+warning: `lrgex_compress` (test "zip_round_trip") generated 5 warnings (4 duplicates)
+warning: unused imports: `SeekFrom` and `Seek`
+   --> src\compress.rs:686:25
+    |
+686 |     use std::io::{Read, Seek, SeekFrom};
+    |                         ^^^^  ^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Read`
+   --> src\compress.rs:757:23
+    |
+757 |         use std::io::{Read, Seek, SeekFrom};
+    |                       ^^^^
+
+warning: use of deprecated constant `_::WARNING`: Component is neither used nor exported
+  --> src\main.rs:31:5
+   |
+31 |     component Halo inherits Rectangle {
+   |     ^^^^^^^^^
+   |
+   = note: `#[warn(deprecated)]` on by default
+
+warning: unused import: `std::io::Read`
+    --> src\extract.rs:2010:13
+     |
+2010 |         use std::io::Read;
+     |             ^^^^^^^^^^^^^
+
+warning: unused import: `std::io::Read`
+    --> src\extract.rs:2211:25
+     |
+2211 |                     use std::io::Read;
+     |                         ^^^^^^^^^^^^^
+
+warning: unused import: `std::io::Read`
+    --> src\extract.rs:2309:21
+     |
+2309 |                 use std::io::Read;
+     |                     ^^^^^^^^^^^^^
+
+warning: variable does not need to be mutable
+   --> src\extract.rs:667:33
+    |
+667 |                     if let Some(mut g) = staging_guard.take() { g.disarm(); }
+    |                                 ----^
+    |                                 |
+    |                                 help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src\compress.rs:754:13
+    |
+754 |         let mut buf = std::io::BufReader::new(f);
+    |             ----^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src\compress.rs:774:13
+    |
+774 |         let mut buf2 = std::io::BufReader::new(f2);
+    |             ----^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: unused variable: `second_err`
+  --> src\metaattr.rs:46:21
+   |
+46 |                 Err(second_err) => {
+   |                     ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_second_err`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src\extract.rs:667:33
+    |
+667 |                     if let Some(mut g) = staging_guard.take() { g.disarm(); }
+    |                                 ----^
+    |                                 |
+    |                                 help: remove this `mut`
+
+warning: unused variable: `base`
+   --> src\segment.rs:412:14
+    |
+412 |         let (base, num) = parse_split_part(p).unwrap();
+    |              ^^^^ help: if this is intentional, prefix it with an underscore: `_base`
+
+warning: variable does not need to be mutable
+   --> src\main.rs:401:9
+    |
+401 |     let mut tree = viewtree::ViewTree::build(paths);
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: function `emit_pax_extensions` is never used
+   --> src\compress.rs:157:4
+    |
+157 | fn emit_pax_extensions(builder: &mut tar::Builder<impl Write>, meta: MetaSnapshot) -> std::io::Result<()> {
+    |    ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `zgx_stream_start` is never used
+   --> src\compress.rs:685:8
+    |
+685 | pub fn zgx_stream_start(file: &mut std::fs::File) -> std::io::Result<u64> {
+    |        ^^^^^^^^^^^^^^^^
+
+warning: function `extract_archive` is never used
+   --> src\extract.rs:305:8
+    |
+305 | pub fn extract_archive(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (bool, String) {
+    |        ^^^^^^^^^^^^^^^
+
+warning: function `extract_archive_with_password` is never used
+   --> src\extract.rs:393:8
+    |
+393 | pub fn extract_archive_with_password(archive: &Path, dest: &Path, cancel: &AtomicBool, password: Option<&str>) -> (bool, String) {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `extract_zgx` is never used
+   --> src\extract.rs:530:4
+    |
+530 | fn extract_zgx(archive: &Path, dest: &Path, cancel: &AtomicBool) -> (bool, String) {
+    |    ^^^^^^^^^^^
+
+warning: function `rar_totals` is never used
+    --> src\extract.rs:1687:4
+     |
+1687 | fn rar_totals(archive: &Path) -> (usize, u64) {
+     |    ^^^^^^^^^^
+
+warning: function `entry_mtime_secs` is never used
+    --> src\extract.rs:2082:4
+     |
+2082 | fn entry_mtime_secs(entry: &sevenz_rust2::SevenZArchiveEntry) -> Option<u64> {
+     |    ^^^^^^^^^^^^^^^^
+
+warning: method `restorable_attrs` is never used
+  --> src\metaattr.rs:99:12
+   |
+97 | impl MetaSnapshot {
+   | ----------------- method in this implementation
+98 |     /// The attributes we actually restore (masked to the user-meaningful subset).
+99 |     pub fn restorable_attrs(self) -> u32 {
+   |            ^^^^^^^^^^^^^^^^
+
+warning: field `0` is never read
+   --> src\metaattr.rs:289:13
+    |
+289 |     Skipped(String), // permanently skipped (bad target, dest exists, etc.)
+    |     ------- ^^^^^^
+    |     |
+    |     field in this variant
+    |
+help: consider changing the field to be of unit type to suppress this warning while preserving the field numbering, or remove the field
+    |
+289 -     Skipped(String), // permanently skipped (bad target, dest exists, etc.)
+289 +     Skipped(()), // permanently skipped (bad target, dest exists, etc.)
+    |
+
+warning: function `roster_path` is never used
+  --> src\multiselect.rs:50:4
+   |
+50 | fn roster_path() -> PathBuf {
+   |    ^^^^^^^^^^^
+
+warning: associated function `new` is never used
+   --> src\progress.rs:184:12
+    |
+183 | impl<R: Read> ByteReader<R> {
+    | --------------------------- associated function in this implementation
+184 |     pub fn new(inner: R, progress: Progress) -> Self {
+    |            ^^^
+
+warning: fields `label`, `files_done`, `files_total`, and `elapsed` are never read
+   --> src\progress.rs:216:9
+    |
+214 | pub struct Status {
+    |            ------ fields in this struct
+215 |     pub phase: usize,
+216 |     pub label: String,
+    |         ^^^^^
+...
+219 |     pub files_done: usize,
+    |         ^^^^^^^^^^
+220 |     pub files_total: usize,
+    |         ^^^^^^^^^^^
+...
+227 |     pub elapsed: f64,
+    |         ^^^^^^^
+
+warning: function `resolve_to_part001` is never used
+  --> src\segment.rs:45:8
+   |
+45 | pub fn resolve_to_part001(path: &Path) -> Option<PathBuf> {
+   |        ^^^^^^^^^^^^^^^^^^
+
+warning: methods `node_by_path` and `expand_all` are never used
+   --> src\viewtree.rs:132:12
+    |
+ 61 | impl ViewTree {
+    | ------------- methods in this implementation
+...
+132 |     pub fn node_by_path(&self, path: &str) -> Option<usize> {
+    |            ^^^^^^^^^^^^
+...
+212 |     pub fn expand_all(&mut self) {
+    |            ^^^^^^^^^^
+
+warning: `lrgex_compress` (bin "lrgex-compress" test) generated 22 warnings (17 duplicates) (run `cargo fix --bin "lrgex-compress" -p lrgex_compress --tests` to apply 5 suggestions)
+warning: `lrgex_compress` (bin "lrgex-compress") generated 22 warnings (run `cargo fix --bin "lrgex-compress" -p lrgex_compress` to apply 4 suggestions)
+    Finished `release` profile [optimized + debuginfo] target(s) in 3m 44s
+     Running unittests src\main.rs (target\release\deps\lrgex_compress-261e611c52241812.exe)
+
+running 41 tests
+test extract::tests::lexical_normalize_resolves_parent ... ok
+test extract::tests::symlink_drive_prefix_rejected ... ok
+test extract::tests::symlink_absolute_target_rejected ... ok
+test metaattr::tests::preserved_attrs_includes_archive ... ok
+test metaattr::tests::preserved_attrs_includes_hidden ... ok
+test metaattr::tests::preserved_attrs_includes_readonly ... ok
+test metaattr::tests::preserved_attrs_includes_system ... ok
+test metaattr::tests::preserved_attrs_is_exactly_the_current_v1_6_0_set ... ok
+test segment::tests::parse_split_part_filenames ... ok
+test segment::tests::split_header_roundtrip ... ok
+test update::tests::is_newer_version_compare ... ok
+test viewtree::tests::clicking_partial_folder_selects_everything_again ... ok
+test viewtree::tests::collapse_hides_subtree_selection_survives ... ok
+test viewtree::tests::dup_dir_and_file_names_do_not_confuse_build ... ok
+test viewtree::tests::empty_and_flat_archives ... ok
+test viewtree::tests::expand_all_shows_everything ... ok
+test viewtree::tests::one_deep_file_deselect_makes_ancestors_partial ... ok
+test viewtree::tests::row_node_index_addresses_hidden_nodes ... ok
+test viewtree::tests::select_all_and_stats ... ok
+test viewtree::tests::single_child_chain_auto_expands ... ok
+test viewtree::tests::single_root_wrapper_auto_expands_others_collapsed ... ok
+test viewtree::tests::unchecking_folder_deselects_whole_subtree ... ok
+test viewtree::tests::three_root_folders_open_as_three_rows ... ok
+test extract::tests::symlink_parent_escape_rejected ... ok
+test segment::tests::discover_parts_reports_all_missing ... ok
+test segment::tests::discover_parts_single_gap ... ok
+test segment::tests::discover_parts_contiguous_ok ... ok
+test extract::tests::conflicts_empty_dest_is_false ... ok
+test extract::tests::conflicts_existing_file_is_true ... ok
+test extract::tests::zip_not_encrypted_returns_false ... ok
+test segment::tests::segment_writer_produces_valid_parts ... ok
+test update::tests::declined_update_roundtrip ... ok
+test segment::tests::concat_reader_chains_parts ... ok
+test segment::tests::corrupt_part_detected ... ok
+test extract::tests::zip_aes256_encryption_detected ... ok
+test segment::tests::compress_paths_split_roundtrip ... ok
+test extract::tests::extract_overwrites_existing_cleanly ... ok
+test extract::tests::zip_slip_is_blocked ... ok
+test extract::tests::extract_same_stem_different_ext_no_collision ... ok
+test extract::tests::extract_leaves_no_temp_files ... ok
+test compress::tests::empty_directories_are_preserved ... ok
+
+test result: ok. 41 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.55s
+
+     Running unittests src\sign.rs (target\release\deps\sign-f8bc7f03c9843547.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\checksum_integrity.rs (target\release\deps\checksum_integrity-62527ac94b8cb50c.exe)
+
+running 2 tests
+test checksum_round_trip_is_byte_identical ... ok
+test checksum_catches_every_single_byte_flip ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.84s
+
+     Running tests\error_reporting.rs (target\release\deps\error_reporting-4877adb2a54b1237.exe)
+
+running 2 tests
+test corrupt_rar_member_error_names_the_file ... ok
+test corrupt_rar_partial_extraction_keeps_good_files ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.91s
+
+     Running tests\extract_to.rs (target\release\deps\extract_to-9acb39fc535517be.exe)
+
+running 2 tests
+test extract_to_uses_picked_folder_directly ... ok
+test extract_to_writes_nothing_outside_destination ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.16s
+
+     Running tests\gap_fixes.rs (target\release\deps\gap_fixes-c1112869a91bcddd.exe)
+
+running 2 tests
+test sevenz_symlink_round_trip ... ok
+test rar_attrs_round_trip ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.38s
+
+     Running tests\metadata_round_trip.rs (target\release\deps\metadata_round_trip-1abbd61c944beaa9.exe)
+
+running 2 tests
+test empty_directory_mtime_round_trips ... ok
+test mtime_ctime_attrs_round_trip_through_compress_extract ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.88s
+
+     Running tests\rar_round_trip.rs (target\release\deps\rar_round_trip-9fe5b2a0fbfe8d53.exe)
+
+running 4 tests
+test rar_crash_safety_survives_hard_kill ... ok
+test rar_mtime_round_trips ... ok
+test rar_multivolume_round_trips ... ok
+test rar_round_trip_is_byte_identical ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.12s
+
+     Running tests\rar_variants.rs (target\release\deps\rar_variants-f214b9f3128372de.exe)
+
+running 3 tests
+test rar4_round_trip ... ok
+test rar_solid_round_trip ... ok
+test rar_encrypted_round_trip ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 30.12s
+
+     Running tests\secondary_metadata.rs (target\release\deps\secondary_metadata-3a661f2466f15c46.exe)
+
+running 2 tests
+test zip_mtime_round_trips ... ok
+test rar_mtime_round_trips ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.38s
+
+     Running tests\selective_extract.rs (target\release\deps\selective_extract-1e74787958b0e53f.exe)
+
+running 1 test
+test zgx_selective_extract_writes_only_selected ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.86s
+
+     Running tests\sevenz_round_trip.rs (target\release\deps\sevenz_round_trip-4f729df851fb67f0.exe)
+
+running 3 tests
+test sevenz_attrs_and_ctime_round_trip ... ok
+test sevenz_single_round_trip_content_and_mtime ... ok
+test sevenz_multi_volume_round_trip_content ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.84s
+
+     Running tests\symlink_round_trip.rs (target\release\deps\symlink_round_trip-50b60a01110687b3.exe)
+
+running 1 test
+test zgx_symlink_round_trip_preserves_target ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\zip_round_trip.rs (target\release\deps\zip_round_trip-488178a6f8d97f9f.exe)
+
+running 1 test
+test zip_round_trip_is_byte_identical ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.32s
+
