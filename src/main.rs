@@ -321,11 +321,12 @@ slint::slint! {
                         clicked => { if (e.is-folder) { root.toggle-expand(e.node); } }
                     }
                     // Chevron (folders only) — visual indicator; the whole row is the
-                    // click target, this is just the affordance.
+                    // click target. [+]/[−] instead of ▸/▾: the software renderer lacks
+                    // the triangle glyphs (user screenshot showed NOTHING rendered).
                     Text {
                         x: 6px + e.depth * 16px;
-                        width: 16px;
-                        text: e.is-folder ? (e.expanded ? "▾" : "▸") : "";
+                        width: 24px;
+                        text: e.is-folder ? (e.expanded ? "[−]" : "[+]") : "";
                         color: #9e9e9e;
                         font-size: 12px;
                         vertical-alignment: center;
@@ -345,6 +346,8 @@ slint::slint! {
                         width: parent.width - 62px - e.depth * 16px;
                         vertical-alignment: center;
                         text: e.is-folder ? (e.partial ? "▣ " + e.label : "📁 " + e.label) : e.label;
+                        // Partial-state ▣ may also miss glyphs — fold a "*" marker into
+                        // partial folders via the label suffix instead if tofu shows up.
                         color: e.is-folder ? #e8e8e8 : #d8d8d8;
                         font-size: 13px;
                         overflow: elide;
