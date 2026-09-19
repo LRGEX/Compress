@@ -310,7 +310,18 @@ slint::slint! {
                 for e[i] in root.entries: Rectangle {
                     height: 26px;
                     background: Math.mod(i, 2) == 1 ? #262626 : transparent;
-                    // Chevron (folders only) — click row start to expand/collapse.
+                    // WHOLE-ROW click = expand/collapse (folders only). The old
+                    // 26px chevron-only zone was undiscoverable — users clicked the
+                    // label and nothing happened. Declared FIRST so the CheckBox on
+                    // top keeps its own clicks.
+                    TouchArea {
+                        x: 0; y: 0;
+                        width: parent.width;
+                        height: parent.height;
+                        clicked => { if (e.is-folder) { root.toggle-expand(e.node); } }
+                    }
+                    // Chevron (folders only) — visual indicator; the whole row is the
+                    // click target, this is just the affordance.
                     Text {
                         x: 6px + e.depth * 16px;
                         width: 16px;
@@ -319,15 +330,7 @@ slint::slint! {
                         font-size: 12px;
                         vertical-alignment: center;
                     }
-                    TouchArea {
-                        x: e.depth * 16px;
-                        width: 26px;
-                        height: parent.height;
-                        clicked => { if (e.is-folder) { root.toggle-expand(e.node); } }
-                    }
                     // Checkbox column — indented by depth (stays right of the chevron).
-                    // Checked+partial is shown by Rust setting checked=true; the
-                    // half-state is conveyed by the folder glyph + row tint below.
                     CheckBox {
                         x: 28px + e.depth * 16px;
                         y: (parent.height - self.height) / 2;
@@ -337,8 +340,6 @@ slint::slint! {
                         toggled => { root.toggle-row(e.node); }
                     }
                     // Name column: indented by depth, left-aligned, ellipsized overflow.
-                    // Partial folders read as "mixed" via a ⊟-style suffix in the label
-                    // text is set from Rust; keep rendering dumb here.
                     Text {
                         x: 54px + e.depth * 16px;
                         width: parent.width - 62px - e.depth * 16px;
