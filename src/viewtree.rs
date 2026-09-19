@@ -65,13 +65,31 @@ impl ViewTree {
     pub fn build(paths: Vec<String>) -> ViewTree {
         let mut sorted = paths;
         sorted.sort();
+        // The v3 path index stores DIRECTORY records too (empty-folder preservation,
+        // walk_tree pushes EntKind::Dir). A path that is a strict prefix of its
+        // sorted successor (successor starts with "P/") is one of those dir
+        // records → DROP it: folders materialize as tree nodes from their files'
+        // paths. (Without this, every folder shows TWICE: a dead file-look row
+        // that can't expand + the real folder row.) A dir record with NO successor
+        // under it (empty folder) is kept — it represents a real extractable entry.
+        let files: Vec<String> = sorted
+            .iter()
+            .enumerate()
+            .filter(|(i, p)| match sorted.get(i + 1) {
+                Some(next) => {
+                    !(next.starts_with(p.as_str()) && next.as_bytes().get(p.len()) == Some(&b'/'))
+                }
+                None => true,
+            })
+            .map(|(_, p)| p.clone())
+            .collect();
         let mut tree = ViewTree {
             nodes: Vec::new(),
             roots: Vec::new(),
             total_files: 0,
             dirs: std::collections::HashMap::new(),
         };
-        for full in sorted {
+        for full in files {
             let mut parent: Option<usize> = None;
             let mut prefix = String::new();
             // Create a folder node for every missing path component.
@@ -405,18 +423,77 @@ mod tests {
     }
 
     #[test]
-    fn dup_dir_and_file_names_do_not_confuse_build() {
+    fn dir_records_in_index_do_not_become_phantom_file_rows() {
+        // Real-world shape: walk_tree pushes dir records for empty-folder
+        // preservation, so the index contains BOTH "F" (dir record) and
+        // "F/a.txt". The dir record must NOT appear as a file row — it showed
+        // up as a dead duplicate "F" row that couldn't expand (user report:
+        // "New folder" listed twice, once as a file).
         let t = ViewTree::build(vec![
-            "notes.txt".into(),
-            "notes.txt/inner.md".into(), // same name as a file at root — legal in tar
+            "New folder".into(),
+            "New folder/New folder".into(),
+            "New folder/New folder/New folder/x.txt".into(),
+            "New folder/a.bmp".into(),
+            "New folder/b.txt".into(),
         ]);
         let rows = t.flatten_visible();
+        let names: Vec<&str> = rows.iter().map(|r| r.label.as_str()).collect();
+        // Wrapper expanded (single root); single-child chain auto-unfolds:
+        // New folder → New folder → New folder → x.txt, then a.bmp, b.txt.
+        assert_eq!(names, vec!["New folder", "New folder", "New folder", "x.txt", "a.bmp", "b.txt"],
+            "dir records must vanish — every 'New folder' row is a FOLDER row");
+        assert!(rows[0].is_folder && rows[1].is_folder && rows[2].is_folder);
+        // no FILE row named "New folder" anywhere
+        assert!(rows.iter().filter(|r| !r.is_folder).all(|r| r.label != "New folder"));
+        // selection still covers all 3 files
+        assert_eq!(t.collect_checked_files().len(), 3);
+    }
+
+    #[test]
+    fn empty_folder_record_is_kept_as_a_row() {
+        // A dir record with NO files under it ("empty/") survives the filter —
+        // it is a real archive entry the user can extract.
+        let t = ViewTree::build(vec!["empty".into(), "z.txt".into()]);
+        let t_rows = t.flatten_visible();
+        let names: Vec<&str> = t_rows.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(names, vec!["empty", "z.txt"]);
+        // "empty" has nothing under it → treated as an entry row (not expandable)
+        assert!(!t.flatten_visible()[0].is_folder);
+    }
+
+    #[test]
+    fn all_dir_records_filtered_in_nested_tree() {
+        // Every level contributes a dir record; none may survive as file rows.
+        let t = ViewTree::build(vec![
+            "A".into(),
+            "A/B".into(),
+            "A/B/C".into(),
+            "A/B/C/f.txt".into(),
+            "A/g.txt".into(),
+        ]);
+        let rows = t.flatten_visible();
+        let files: Vec<&str> = rows.iter().filter(|r| !r.is_folder).map(|r| r.label.as_str()).collect();
+        assert_eq!(files, vec!["f.txt", "g.txt"], "only real files appear as file rows (chain auto-expands so f.txt is visible)");
+        // A/B/C single-child chain: A expanded (single root) → B visible, expanded → C visible, expanded → f.txt
+        assert_eq!(t.collect_checked_files(), vec!["A/B/C/f.txt", "A/g.txt"]);
+    }
+
+    #[test]
+    fn dup_dir_and_file_names_do_not_confuse_build() {
+        // "notes.txt" file record + "notes.txt/inner.md": the file record is a
+        // strict prefix of the folder path → filtered as a dir record (a tar
+        // writing both would clobber at extract time anyway — folder wins).
+        let t = ViewTree::build(vec![
+            "notes.txt".into(),
+            "notes.txt/inner.md".into(),
+        ]);
+        let rows = t.flatten_visible();
+        assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].label, "notes.txt");
-        assert_eq!(rows[0].is_folder, false, "file leaf sorts first");
-        assert_eq!(rows[1].label, "notes.txt");
-        assert_eq!(rows[1].is_folder, true, "same-named folder is a separate row");
+        assert_eq!(rows[0].is_folder, true, "folder row only — no dead duplicate");
         // folder has 1 child → auto-expanded
-        assert_eq!(rows[2].label, "inner.md");
+        assert_eq!(rows[1].label, "inner.md");
+        assert_eq!(rows[1].is_folder, false);
     }
 
     #[test]
