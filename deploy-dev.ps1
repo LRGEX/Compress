@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
-# Fat-LTO rustc needs a bigger thread stack or it crashes (0xc0000409) — see AGENTS.md rule 7.
-$env:RUST_MIN_STACK = '33554432'
+# Fat-LTO rustc needs a bigger thread stack or it crashes (0xc0000409, flaky at 32MB) — see AGENTS.md rule 7.
+$env:RUST_MIN_STACK = '67108864'
 $log = 'E:\LRG\LRG Data Cloud\L.R.G\Devoloping\Coding\Compress\deploy-dev.log'
 $src = 'E:\LRG\LRG Data Cloud\L.R.G\Devoloping\Coding\Compress\target\release\lrgex-compress.exe'
 $dst = 'C:\Program Files\LRGEX Compress\lrgex-compress.exe'
