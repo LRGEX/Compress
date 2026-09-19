@@ -1,8 +1,36 @@
-# Patch Notes - Version 1.8.2 - Current
+# Patch Notes
 
-> **Note:** behavior refined post-release — Extract To now creates an archive-named subfolder (Desktop Folder.zgx → <picked>\Desktop Folder\). The notes below describe the initial 1.8.2 release; the subfolder behavior ships in the next version.
+## Version 1.9.0 — Current
 
-## 🔒 Extract To: Zero Bytes Outside the Destination
+### 🌳 View: real file tree — select whole folders in one click
+
+- **Folder rows with `[+]`/`[-]` expand markers** — click anywhere on a folder row to
+  open/close it (ASCII markers: the software renderer has no ▸/▾ glyphs).
+- **One click on a folder's checkbox selects/deselects its ENTIRE subtree** — before,
+  extracting one folder out of 3,000 files meant clicking 3,000 file rows.
+- **Mix freely**: pick individual files inside a folder; the folder shows `[~]`
+  (partially selected) and the header shows a live "N of M selected" count.
+- **Explorer-style defaults**: folders open collapsed (3 folders × 3,000 files opens
+  as 3 rows); single-child chains and a single top-level wrapper auto-expand.
+- **No dead duplicate rows**: directory records stored in the archive index no longer
+  render as unexpandable file-look twins of real folders.
+- **Selection survives collapse**; checkbox toggles update in place (no scroll jump).
+- Extraction flow unchanged: checked files go through the same battle-tested
+  `--only` selective-extract engine (69/69 tests green).
+
+### 📂 Extract To: archive-named subfolder (WinRAR-style)
+
+- **`Desktop Folder.zgx` → Extract To → pick `D:\Games` → extracts into
+  `D:\Games\Desktop Folder\`** — same naming convention as plain Extract, keeps
+  multiple extractions organized in one place.
+- The zero-bytes-outside-the-destination law is unchanged: all temp/staging stays on
+  the destination partition (drive roots included) and is always cleaned up.
+
+---
+
+## Version 1.8.2
+
+### 🔒 Extract To: Zero Bytes Outside the Destination
 
 - **Drive-root destinations fully supported**: picking a drive root (e.g. `D:\`) now extracts
   with ALL temp/staging on the destination partition. Before: the staging folder fell
