@@ -44,9 +44,9 @@
 
 ---
 
-# Patch Notes - Version 1.8.1
+## Version 1.8.1
 
-## 📂 Extract To...
+### 📂 Extract To...
 
 - **Right-click an archive → LRGEX → Extract To...** — pick any destination folder
   with the folder browser; contents extract directly into it. Perfect when the
