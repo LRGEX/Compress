@@ -68,7 +68,7 @@
   only the selected files — big disk savings when you need a few files from a huge archive.
 - Only the selected files' folder chain is created — no empty folder skeleton.
 
-## 🟠 Partial Extraction (RAR + zip — WinRAR parity)
+## 🟠 Partial Extraction (RAR + zip — selective file recovery)
 
 - **One corrupt file no longer kills the whole extraction.** Members that fail a
   checksum are skipped and listed in an amber "Done - N failed: …" summary; all other
@@ -188,7 +188,7 @@
 - **49 automated tests** covering every format, every metadata field, cancel,
   multi-volume, crash-safety, and overwrite+cancel data-loss scenarios.
   - No `#[ignore]`d tests hiding gaps — every test runs automatically.
-  - RAR + 7z tests auto-detect external tools (WinRAR / 7-Zip) and run when present.
+  - RAR + 7z tests auto-detect external extractor tools and run when present.
 - **Vendored C unrar crate removed** (210KB of C source). RAR extraction is 100% pure Rust.
 - **License**: switched from MIT to GPL-3.0-or-later (unrar-rs is GPL-3.0 + UnRAR restriction).
 
@@ -197,9 +197,9 @@
 - **7z symlinks**: requires Administrator or Developer Mode to create symlinks on Windows.
   Without elevation, symlinks in .7z archives are skipped silently.
 - **zip ctime**: the ZIP format has no creation time field — cannot be preserved.
-- **7z ctime**: 7-Zip does not store creation time by default (only with `-mtc=on`).
+- **7z ctime**: the 7z format does not store creation time by default (only with `-mtc=on`).
   Restored when present, absent when not.
-- **RAR4**: unrar-rs claims support but could not be tested (WinRAR 7.23 creates RAR5 only).
+- **RAR4**: unrar-rs claims support but could not be tested (current RAR tools create RAR5 only).
 - **Encrypted archives**: password-protected RAR, 7z, and ZIP are supported via GUI
   prompt or `-p <password>` CLI flag. However, the GUI window stays open briefly after
   extraction completes (auto-close delay). Scripted/headless use with `-p` blocks until
