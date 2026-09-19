@@ -5,7 +5,7 @@
 ### 🌳 View: real file tree — select whole folders in one click
 
 - **Folder rows with `[+]`/`[-]` expand markers** — click anywhere on a folder row to
-  open/close it (ASCII markers: the software renderer has no ▸/▾ glyphs).
+  open/close it (ASCII markers: the renderer has no ▸/▾ glyphs).
 - **One click on a folder's checkbox selects/deselects its ENTIRE subtree** — before,
   extracting one folder out of 3,000 files meant clicking 3,000 file rows.
 - **Mix freely**: pick individual files inside a folder; the folder shows `[~]`
@@ -18,7 +18,7 @@
 - Extraction flow unchanged: checked files go through the same battle-tested
   `--only` selective-extract engine (69/69 tests green).
 
-### 📂 Extract To: archive-named subfolder (WinRAR-style)
+### 📂 Extract To: archive-named subfolder
 
 - **`Desktop Folder.zgx` → Extract To → pick `D:\Games` → extracts into
   `D:\Games\Desktop Folder\`** — same naming convention as plain Extract, keeps
