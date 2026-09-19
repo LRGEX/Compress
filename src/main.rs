@@ -345,9 +345,9 @@ slint::slint! {
                         x: 54px + e.depth * 16px;
                         width: parent.width - 62px - e.depth * 16px;
                         vertical-alignment: center;
-                        text: e.is-folder ? (e.partial ? "[~] " + e.label : "[+] " + e.label) : e.label;
-                        // All-ASCII markers (renderer lacks ▸/▾/▣/📁 glyphs):
-                        // [+]=expandable, [-]=expanded, [~]=partially selected folder.
+                        text: e.is-folder ? (e.partial ? "[~] " + e.label : e.label) : e.label;
+                        // Chevron column owns [+]/[-]; the label only carries the
+                        // all-ASCII [~] partial-selection marker (no ▸/▾/▣ glyphs).
                         color: e.is-folder ? #e8e8e8 : #d8d8d8;
                         font-size: 13px;
                         overflow: elide;
